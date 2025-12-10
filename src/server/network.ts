@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { AttachmentBuilder, Client, Events, TextChannel, type Channel, type Snowflake, type TextBasedChannel } from "discord.js";
 
 export default class DatboxNetwork {
@@ -28,10 +29,26 @@ export default class DatboxNetwork {
 
 	async sendAttachment(data: Buffer): Promise<string> {
 		if (!this.client.isReady()) throw new Error("Client is not ready yet");
-		
+
 		const attachment = new AttachmentBuilder(data);
+		// Fancy random name
+		const hash = createHash("md5");
+		hash.update(data);
+		attachment.setName(hash.digest("hex"));
 		const channel = this.channel as TextChannel;
 		const message = await channel.send({ files: [attachment] });
 		return message.id;
+	}
+
+	async fetchAttachment(id: string): Promise<Buffer> {
+		if (!this.client.isReady()) throw new Error("Client is not ready yet");
+
+		const channel = this.channel as TextChannel;
+		const message = await channel.messages.fetch(id);
+		const attachment = message.attachments.first();
+		if (!attachment) throw new Error("Message has no attachment");
+		const res = await fetch(attachment.url);
+		if (!res.ok) throw new Error(`Received HTTP status ${res.status} while fetching attachment`);
+		return Buffer.from(await res.arrayBuffer());
 	}
 }
