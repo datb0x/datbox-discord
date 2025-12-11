@@ -1,4 +1,5 @@
 import { DiscordSnowflake } from "@sapphire/snowflake";
+import { Sema } from "async-sema";
 import { createHash } from "crypto";
 import { AttachmentBuilder, Client, Events, TextChannel, type Channel, type Snowflake, type TextBasedChannel } from "discord.js";
 
@@ -6,12 +7,14 @@ export default class DatboxNetwork {
 	client: Client;
 	channelId: Snowflake;
 	channel?: Channel | null;
+	readonly sema: Sema;
 
 	constructor(channelId: Snowflake) {
 		this.channelId = channelId;
 		this.client = new Client({
 			intents: "MessageContent"
 		});
+		this.sema = new Sema(20); // Discord global rate limit is 50
 	}
 
 	async login(token: string) {
@@ -31,42 +34,63 @@ export default class DatboxNetwork {
 	async sendAttachment(data: Buffer): Promise<string> {
 		if (!this.client.isReady()) throw new Error("Client is not ready yet");
 
-		const attachment = new AttachmentBuilder(data);
-		// Fancy random name
-		const hash = createHash("md5");
-		hash.update(data);
-		attachment.setName(hash.digest("hex"));
-		const channel = this.channel as TextChannel;
-		const message = await channel.send({ files: [attachment] });
-		return message.id;
+		await this.sema.acquire();
+		try {
+			const attachment = new AttachmentBuilder(data);
+			// Fancy random name
+			const hash = createHash("md5");
+			hash.update(data);
+			attachment.setName(hash.digest("hex"));
+			const channel = this.channel as TextChannel;
+			const message = await channel.send({ files: [attachment] });
+			this.sema.release();
+			return message.id;
+		} catch (err) {
+			this.sema.release();
+			throw err;
+		}
 	}
 
 	async fetchAttachment(id: string): Promise<Buffer> {
 		if (!this.client.isReady()) throw new Error("Client is not ready yet");
 
-		const channel = this.channel as TextChannel;
-		const message = await channel.messages.fetch(id);
-		const attachment = message.attachments.first();
-		if (!attachment) throw new Error("Message has no attachment");
-		const res = await fetch(attachment.url);
-		if (!res.ok) throw new Error(`Received HTTP status ${res.status} while fetching attachment`);
-		return Buffer.from(await res.arrayBuffer());
+		await this.sema.acquire();
+		try {
+			const channel = this.channel as TextChannel;
+			const message = await channel.messages.fetch(id);
+			const attachment = message.attachments.first();
+			if (!attachment) throw new Error("Message has no attachment");
+			const res = await fetch(attachment.url);
+			if (!res.ok) throw new Error(`Received HTTP status ${res.status} while fetching attachment`);
+			this.sema.release();
+			return Buffer.from(await res.arrayBuffer());
+		} catch (err) {
+			this.sema.release();
+			throw err;
+		}
 	}
 
 	async deleteMessages(ids: (string | bigint)[]) {
 		if (!this.client.isReady()) throw new Error("Client is not ready yet");
 
-		const bulk: string[] = [];
-		const individual: string[] = [];
-		ids.forEach(id => {
-			const data = DiscordSnowflake.deconstruct(id);
-			if (BigInt(Date.now()) - data.timestamp < 14 * 24 * 60 * 60 * 1000) bulk.push(id.toString());
-			else individual.push(id.toString());
-		});
+		await this.sema.acquire();
+		try {
+			const bulk: string[] = [];
+			const individual: string[] = [];
+			ids.forEach(id => {
+				const data = DiscordSnowflake.deconstruct(id);
+				if (BigInt(Date.now()) - data.timestamp < 14 * 24 * 60 * 60 * 1000) bulk.push(id.toString());
+				else individual.push(id.toString());
+			});
 
-		const channel = this.channel as TextChannel;
-		if (bulk.length) await channel.bulkDelete(bulk);
-		for (const id of individual)
-			await channel.messages.delete(id);
+			const channel = this.channel as TextChannel;
+			if (bulk.length) await channel.bulkDelete(bulk);
+			for (const id of individual)
+				await channel.messages.delete(id);
+			this.sema.release();
+		} catch (err) {
+			this.sema.release();
+			throw err;
+		}
 	}
 }

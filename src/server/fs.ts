@@ -35,8 +35,8 @@ export default class DatboxFileSystem {
 			const readStream = fs.createReadStream(path.join(this.root, file));
 			// Wait for readable
 			await new Promise<void>(res => readStream.on("readable", () => res()));
-			const size = (readStream.read(4) as Buffer).readUInt32BE();
-			stat.size = size;
+			const size = (readStream.read(8) as Buffer).readBigUInt64BE();
+			stat.size = Number(size);
 		}
 		return stat;
 	}
@@ -63,7 +63,7 @@ export default class DatboxFileSystem {
 		const stat = fs.statSync(path.join(this.root, file));
 		if (stat.isFile()) {
 			if (options?.remote) {
-				const readStream = fs.createReadStream(path.join(this.root, file), { start: 4 });
+				const readStream = fs.createReadStream(path.join(this.root, file), { start: 8 });
 				// Wait for readable
 				await new Promise<void>(res => readStream.on("readable", () => res()));
 
@@ -92,47 +92,51 @@ export default class DatboxFileSystem {
 		fs.mkdirSync(path.join(this.root, path.dirname(virtPath)), { recursive: true });
 		if (!fs.existsSync(virtDir)) throw new Error("Failed to create directory");
 
-		if (fs.existsSync(path.join(this.root, virtPath))) throw new Error("File already exists in virtual file system");
+		if (fs.existsSync(path.join(this.root, virtPath))) {
+			if (fs.statSync(path.join(this.root, virtPath)).isDirectory()) virtPath = path.join(virtPath, path.basename(physPath));
+			else throw new Error("File already exists in virtual file system");
+		}
 
 		await this.sema.acquire();
 		try {
+			const estimatedChunks = Math.ceil(stat.size / FILE_CHUNK_SIZE);
+			console.log("Starting upload of", physPath);
+			console.log("Estimated chunks (pre-gzip):", estimatedChunks);
 			const buf = Buffer.alloc(FILE_CHUNK_SIZE);
 			let bufLength = 0, chunks = 0;
 
 			const writeStream = fs.createWriteStream(path.join(this.root, virtPath));
 			// Write file size
-			buf.writeUint32BE(stat.size);
-			writeStream.write(Buffer.copyBytesFrom(buf, 0, 4));
+			buf.writeBigUInt64BE(BigInt(stat.size));
+			writeStream.write(Buffer.copyBytesFrom(buf, 0, 8));
 			// Piggyback file checksum
 			const hash = createHash("md5");
+
+			const bufferedUpload: Promise<string>[] = [];
+			const idBuf = Buffer.alloc(8);
 
 			const readStream = fs.createReadStream(physPath);
 			const gzip = createGzip();
 			const uploader = new Writable({
-				write: (chunk, _encoding, callback) => {
+				write: async (chunk, _encoding, callback) => {
 					hash.update(chunk);
-					const sending: Promise<string>[] = [];
 					for (const byte of chunk as number[]) {
 						buf.writeUInt8(byte, bufLength++);
 						// Buffer is full. Send to Discord
 						if (bufLength >= buf.byteLength) {
 							const copy = Buffer.from(buf);
-							sending.push(this.network.sendAttachment(copy));
+							// Semaphore is taken. Wait for first upload to finish
+							if (this.network.sema.tryAcquire() === undefined) {
+								const id = await bufferedUpload.shift()!;
+								idBuf.writeBigUInt64BE(BigInt(id), 0);
+								writeStream.write(Buffer.from(idBuf));
+								process.stdout.write(`\rUploaded chunks: ${++chunks} / ${estimatedChunks}`);
+							}
+							bufferedUpload.push(this.network.sendAttachment(copy));
 							bufLength = 0;
 						}
 					}
-
-					Promise.all(sending)
-						.then((ids) => {
-							const buffer = Buffer.alloc(8);
-							for (const id of ids) {
-								buffer.writeBigUInt64BE(BigInt(id), 0);
-								writeStream.write(Buffer.from(buffer));
-							}
-							chunks += ids.length;
-							callback();
-						})
-						.catch((err) => callback(err));
+					callback();
 				},
 			});
 
@@ -140,16 +144,9 @@ export default class DatboxFileSystem {
 				// Send last incomplete chunk
 				if (bufLength > 0) {
 					const copy = Buffer.copyBytesFrom(buf, 0, bufLength);
-					this.network.sendAttachment(copy).then(id => {
-						const buffer = Buffer.alloc(8);
-						buffer.writeBigUInt64BE(BigInt(id), 0);
-						chunks++;
-						writeStream.write(buffer, (err) => {
-							if (err) rej(err);
-							else res();
-						});
-					}).catch(rej);
-				} else res();
+					bufferedUpload.push(this.network.sendAttachment(copy));
+				}
+				res();
 			}).on("error", rej));
 
 			let totalBytes = 0;
@@ -161,6 +158,14 @@ export default class DatboxFileSystem {
 
 			await uploaded;
 
+			// Wait for all buffered uploads to resolve
+			for (const upload of bufferedUpload) {
+				idBuf.writeBigUInt64BE(BigInt(await upload));
+				writeStream.write(Buffer.from(idBuf));
+				process.stdout.write(`\rUploaded chunks: ${++chunks} / ${estimatedChunks}`);
+			}
+			process.stdout.write("\n");
+
 			// Write separator
 			const sep = Buffer.alloc(8, 0);
 			writeStream.write(sep);
@@ -169,9 +174,11 @@ export default class DatboxFileSystem {
 			writeStream.write(checksum);
 			writeStream.close();
 
+			console.log("Finished upload of", physPath);
 			this.sema.release();
 			return { path: path.join("/", virtPath), chunks, checksum };
 		} catch (err) {
+			console.error(err);
 			this.sema.release();
 			throw err;
 		}
@@ -183,6 +190,7 @@ export default class DatboxFileSystem {
 
 		await this.sema.acquire();
 		try {
+			console.log("Starting download of", virtPath);
 			const readStream = fs.createReadStream(path.join(this.root, virtPath));
 			const writeStream = fs.createWriteStream(physPath);
 			const gunzip = createGunzip();
@@ -191,17 +199,41 @@ export default class DatboxFileSystem {
 			// Wait for readable
 			await new Promise<void>(res => readStream.on("readable", () => res()));
 
-			const size = (readStream.read(4) as Buffer).readUInt32BE();
+			const size = Number((readStream.read(8) as Buffer).readBigUInt64BE());
 			const hash = createHash("md5");
 
-			let id: BigInt, totalBytes = 0;
+			const estimatedChunks = Math.ceil((fs.statSync(path.join(this.root, virtPath)).size - 24) / 8);
+			console.log("File has size %d bytes. Estimated chunks (post-gzip): %d", size, estimatedChunks);
+
+			// Setup gunzip to track progress
+			let totalBytes = 0;
+			gunzip.on("data", (chunk) => {
+				totalBytes += chunk.length;
+				progressCallback(totalBytes, size);
+			});
+
+			const bufferedDownload: Promise<Buffer>[] = [];
+
+			let id: BigInt, chunks = 0;
 			while (id = (readStream.read(8) as Buffer).readBigUInt64BE()) {
-				const buf = await this.network.fetchAttachment(id.toString());
+				// Sema used up. Wait for one download
+				if (this.network.sema.tryAcquire() === undefined) {
+					const buf = await bufferedDownload.shift()!;
+					gunzip.write(buf);
+					hash.update(buf);
+					process.stdout.write(`\rDownloaded chunks: ${++chunks} / ${estimatedChunks}`);
+				}
+				bufferedDownload.push(this.network.fetchAttachment(id.toString()));
+			}
+
+			// Wait for all buffered downloads to resolve
+			for (const download of bufferedDownload) {
+				const buf = await download;
 				gunzip.write(buf);
 				hash.update(buf);
-				totalBytes += buf.length;
-				progressCallback(totalBytes, size);
+				process.stdout.write(`\rDownloaded chunks: ${++chunks} / ${estimatedChunks}`);
 			}
+			process.stdout.write("\n");
 
 			gunzip.end();
 			
@@ -212,8 +244,10 @@ export default class DatboxFileSystem {
 				if (newChecksum[ii] != oldChecksum[ii])
 					throw new Error("Downloaded file checksum doesn't match");
 
+			console.log("Finished download of", virtPath);
 			this.sema.release();
 		} catch (err) {
+			console.error(err);
 			this.sema.release();
 			throw err;
 		}
