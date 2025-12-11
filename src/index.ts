@@ -31,6 +31,25 @@ const download = program.command("download")
 	.argument("<local-path>", "Local path to the file you want to download to")
 	.action(() => { import("./client/download"); });
 
+const list = program.command("ls")
+	.description("List files in a directory")
+	.option("-l", "Use a long listing format")
+	.argument("<virtual-path>", "Virtual path of the directory")
+	.action(() => { import("./client/list"); });
+
+const move = program.command("mv")
+	.description("Move a file or directory")
+	.argument("<src>", "Source file to move")
+	.argument("<dest>", "Destination to move to")
+	.action(() => { import("./client/move"); });
+
+const remove = program.command("rm")
+	.description("Remove a file or directory (recursively)")
+	.option("-r, --recursive", "Remove files recursively")
+	.option("-R, --remote", "Delete the remote attachments")
+	.argument("<virtual-path>", "Path to remove")
+	.action(() => { import("./client/remove"); });
+
 program.parse();
 
-export { server, upload, download };
+export { server, upload, download, list, move, remove };

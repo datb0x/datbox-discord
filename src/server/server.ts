@@ -4,7 +4,8 @@ import DatboxFileSystem from "./fs";
 import { server } from "..";
 import RootIPC from "node-ipc";
 import { name } from "../../package.json";
-import type { TransferResponse } from "../types";
+import type { NoDataResponse, TransferResponse } from "../types";
+import type { Stats } from "fs";
 
 const options = server.opts<{ channel?: string, config: string, root?: string, token?: string }>();
 const config = new DatboxConfig(options.config);
@@ -45,6 +46,37 @@ RootIPC.serve(() => {
 			RootIPC.server.emit(socket, `${name}.response`, { text: `Downloaded to ${data.localPath} successfully`, final: true } as TransferResponse);
 		} catch (err) {
 			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as TransferResponse);
+		}
+	});
+	RootIPC.server.on(`${name}.list`, async (data: { virtualPath: string, long: boolean }, socket) => {
+		try {
+			const results = await datbox.readdirAsync(data.virtualPath, data.long);
+			let body = "";
+			if (data.long) (results as { name: string, stat: Stats }[]).forEach((entry, ii) => {
+				if (ii != 0) body += "\n";
+				body += entry.stat.size + "\t";
+				body += entry.name;
+			});
+			else (results as string[]).forEach(name => body += name + "\t");
+			RootIPC.server.emit(socket, `${name}.response`, { text: body, final: true } as NoDataResponse);
+		} catch (err) {
+			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as NoDataResponse);
+		}
+	});
+	RootIPC.server.on(`${name}.move`, async (data: { src: string, dest: string }, socket) => {
+		try {
+			datbox.moveSync(data.src, data.dest);
+			RootIPC.server.emit(socket, `${name}.response`, { final: true } as NoDataResponse);
+		} catch (err) {
+			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as NoDataResponse);
+		}
+	});
+	RootIPC.server.on(`${name}.remove`, async (data: { virtualPath: string, recursive?: boolean, remote?: boolean }, socket) => {
+		try {
+			await datbox.rmAsync(data.virtualPath, { recursive: data.recursive, remote: data.remote });
+			RootIPC.server.emit(socket, `${name}.response`, { final: true } as NoDataResponse);
+		} catch (err) {
+			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as NoDataResponse);
 		}
 	});
 });

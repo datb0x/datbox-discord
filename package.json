@@ -12,6 +12,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@sapphire/snowflake": "^3.5.5",
     "commander": "^14.0.2",
     "discord.js": "^14.25.1",
     "env-paths": "^3.0.0",

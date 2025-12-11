@@ -5,6 +5,8 @@ export type ServerResponse<T> = {
 	data?: T;
 }
 
+export type NoDataResponse = ServerResponse<undefined>;
+
 export type TransferResponse = ServerResponse<{
 	current: number;
 	total: number;

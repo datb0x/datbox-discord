@@ -22,6 +22,59 @@ export default class DatboxFileSystem {
 		return fs.existsSync(path.join(this.root, file));
 	}
 
+	async statAsync(file: string) {
+		const stat = fs.statSync(path.join(this.root, file));
+		if (stat.isFile()) {
+			const readStream = fs.createReadStream(path.join(this.root, file));
+			// Wait for readable
+			await new Promise<void>(res => readStream.on("readable", () => res()));
+			const size = (readStream.read(4) as Buffer).readUInt32BE();
+			stat.size = size;
+		}
+		return stat;
+	}
+
+	async readdirAsync(file: string, long = false) {
+		if (fs.statSync(path.join(this.root, file)).isFile()) throw new Error(`Not a directory`);
+		if (!long) return fs.readdirSync(path.join(this.root, file));
+		else return await Promise.all(fs.readdirSync(path.join(this.root, file)).map(entry => new Promise<{ name: string, stat: fs.Stats }>((res, rej) => {
+			this.statAsync(path.join(file, entry))
+				.then((stat) => res({ name: entry, stat }))
+				.catch(rej);
+		})));
+	}
+
+	moveSync(src: string, dest: string) {
+		if (!this.existsSync(src)) throw new Error("Source file doesn't exist");
+		if (this.existsSync(dest)) throw new Error("Destination file already exists");
+
+		fs.renameSync(path.join(this.root, src), path.join(this.root, dest));
+	}
+
+	async rmAsync(file: string, options?: { recursive?: boolean, remote?: boolean }) {
+		if (!this.existsSync(file)) throw new Error("File doesn't exist");
+		const stat = fs.statSync(path.join(this.root, file));
+		if (stat.isFile()) {
+			if (options?.remote) {
+				const readStream = fs.createReadStream(path.join(this.root, file), { start: 4 });
+				// Wait for readable
+				await new Promise<void>(res => readStream.on("readable", () => res()));
+
+				let ids: bigint[] = [];
+				let id: bigint;
+				while (id = (readStream.read(8) as Buffer).readBigUInt64BE())
+					ids.push(id);
+				
+				await this.network.deleteMessages(ids);
+			}
+			fs.rmSync(path.join(this.root, file));
+		} else if (stat.isDirectory()) {
+			if (!options?.recursive) throw new Error("Cannot remove directory. Consider setting recursive to true");
+			for (const entry of fs.readdirSync(path.join(this.root, file)))
+				await this.rmAsync(path.join(file, entry), options);
+		}
+	}
+
 	async uploadAsync(physPath: string, virtPath: string, progressCallback: (current: number, total: number) => void) {
 		if (!fs.existsSync(physPath)) throw new Error("Failed to create directory");
 
