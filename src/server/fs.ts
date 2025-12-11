@@ -4,17 +4,20 @@ import { Writable } from "stream";
 import { createGunzip, createGzip } from "zlib";
 import type DatboxNetwork from "./network";
 import { createHash } from "crypto";
+import { Sema } from "async-sema";
 
 const FILE_CHUNK_SIZE = 10 * 1024 * 1023; // less than 10 MiB
 
 export default class DatboxFileSystem {
 	readonly root: string;
+	readonly sema: Sema;
 	readonly network: DatboxNetwork;
 
-	constructor(root: string, network: DatboxNetwork) {
+	constructor(root: string, maxJobs: number, network: DatboxNetwork) {
 		fs.mkdirSync(root, { recursive: true });
 		if (!fs.existsSync(root)) throw new Error("Failed to create root directory");
 		this.root = root;
+		this.sema = new Sema(maxJobs);
 		this.network = network;
 	}
 
@@ -87,113 +90,128 @@ export default class DatboxFileSystem {
 
 		if (fs.existsSync(path.join(this.root, virtPath))) throw new Error("File already exists in virtual file system");
 
-		const buf = Buffer.alloc(FILE_CHUNK_SIZE);
-		let bufLength = 0, chunks = 0;
+		await this.sema.acquire();
+		try {
+			const buf = Buffer.alloc(FILE_CHUNK_SIZE);
+			let bufLength = 0, chunks = 0;
 
-		const writeStream = fs.createWriteStream(path.join(this.root, virtPath));
-		// Write file size
-		buf.writeUint32BE(stat.size);
-		writeStream.write(Buffer.copyBytesFrom(buf, 0, 4));
-		// Piggyback file checksum
-		const hash = createHash("md5");
+			const writeStream = fs.createWriteStream(path.join(this.root, virtPath));
+			// Write file size
+			buf.writeUint32BE(stat.size);
+			writeStream.write(Buffer.copyBytesFrom(buf, 0, 4));
+			// Piggyback file checksum
+			const hash = createHash("md5");
 
-		const readStream = fs.createReadStream(physPath);
-		const gzip = createGzip();
-		const uploader = new Writable({
-			write: (chunk, _encoding, callback) => {
-				hash.update(chunk);
-				const sending: Promise<string>[] = [];
-				for (const byte of chunk as number[]) {
-					buf.writeUInt8(byte, bufLength++);
-					// Buffer is full. Send to Discord
-					if (bufLength >= buf.byteLength) {
-						const copy = Buffer.from(buf);
-						sending.push(this.network.sendAttachment(copy));
-						bufLength = 0;
-					}
-				}
-
-				Promise.all(sending)
-					.then((ids) => {
-						const buffer = Buffer.alloc(8);
-						for (const id of ids) {
-							buffer.writeBigUInt64BE(BigInt(id), 0);
-							writeStream.write(Buffer.from(buffer));
+			const readStream = fs.createReadStream(physPath);
+			const gzip = createGzip();
+			const uploader = new Writable({
+				write: (chunk, _encoding, callback) => {
+					hash.update(chunk);
+					const sending: Promise<string>[] = [];
+					for (const byte of chunk as number[]) {
+						buf.writeUInt8(byte, bufLength++);
+						// Buffer is full. Send to Discord
+						if (bufLength >= buf.byteLength) {
+							const copy = Buffer.from(buf);
+							sending.push(this.network.sendAttachment(copy));
+							bufLength = 0;
 						}
-						chunks += ids.length;
-						callback();
-					})
-					.catch((err) => callback(err));
-			},
-		});
+					}
 
-		const uploaded = new Promise<void>((res, rej) => uploader.on("close", () => {
-			// Send last incomplete chunk
-			if (bufLength > 0) {
-				const copy = Buffer.copyBytesFrom(buf, 0, bufLength);
-				this.network.sendAttachment(copy).then(id => {
-					const buffer = Buffer.alloc(8);
-					buffer.writeBigUInt64BE(BigInt(id), 0);
-					chunks++;
-					writeStream.write(buffer, (err) => {
-						if (err) rej(err);
-						else res();
-					});
-				}).catch(rej);
-			} else res();
-		}).on("error", rej));
+					Promise.all(sending)
+						.then((ids) => {
+							const buffer = Buffer.alloc(8);
+							for (const id of ids) {
+								buffer.writeBigUInt64BE(BigInt(id), 0);
+								writeStream.write(Buffer.from(buffer));
+							}
+							chunks += ids.length;
+							callback();
+						})
+						.catch((err) => callback(err));
+				},
+			});
 
-		let totalBytes = 0;
-		readStream.on("data", chunk => {
-			totalBytes += chunk.length;
-			progressCallback(totalBytes, stat.size);
-		});
-		readStream.pipe(gzip).pipe(uploader);
+			const uploaded = new Promise<void>((res, rej) => uploader.on("close", () => {
+				// Send last incomplete chunk
+				if (bufLength > 0) {
+					const copy = Buffer.copyBytesFrom(buf, 0, bufLength);
+					this.network.sendAttachment(copy).then(id => {
+						const buffer = Buffer.alloc(8);
+						buffer.writeBigUInt64BE(BigInt(id), 0);
+						chunks++;
+						writeStream.write(buffer, (err) => {
+							if (err) rej(err);
+							else res();
+						});
+					}).catch(rej);
+				} else res();
+			}).on("error", rej));
 
-		await uploaded;
+			let totalBytes = 0;
+			readStream.on("data", chunk => {
+				totalBytes += chunk.length;
+				progressCallback(totalBytes, stat.size);
+			});
+			readStream.pipe(gzip).pipe(uploader);
 
-		// Write separator
-		const sep = Buffer.alloc(8, 0);
-		writeStream.write(sep);
-		// Write file checksum at the end
-		const checksum = hash.digest();
-		writeStream.write(checksum);
-		writeStream.close();
+			await uploaded;
 
-		return { path: path.join("/", virtPath), chunks, checksum };
+			// Write separator
+			const sep = Buffer.alloc(8, 0);
+			writeStream.write(sep);
+			// Write file checksum at the end
+			const checksum = hash.digest();
+			writeStream.write(checksum);
+			writeStream.close();
+
+			this.sema.release();
+			return { path: path.join("/", virtPath), chunks, checksum };
+		} catch (err) {
+			this.sema.release();
+			throw err;
+		}
 	}
 
 	async downloadAsync(virtPath: string, physPath: string, progressCallback: (current: number, total: number) => void) {
 		if (fs.existsSync(physPath)) throw new Error(`Physical path ${physPath} already exists. Not overwriting`);
 		if (!this.existsSync(virtPath)) throw new Error(`Virtual path ${path.join(this.root, virtPath)} doesn't exist`);
 
-		const readStream = fs.createReadStream(path.join(this.root, virtPath));
-		const writeStream = fs.createWriteStream(physPath);
-		const gunzip = createGunzip();
-		gunzip.pipe(writeStream);
+		await this.sema.acquire();
+		try {
+			const readStream = fs.createReadStream(path.join(this.root, virtPath));
+			const writeStream = fs.createWriteStream(physPath);
+			const gunzip = createGunzip();
+			gunzip.pipe(writeStream);
 
-		// Wait for readable
-		await new Promise<void>(res => readStream.on("readable", () => res()));
+			// Wait for readable
+			await new Promise<void>(res => readStream.on("readable", () => res()));
 
-		const size = (readStream.read(4) as Buffer).readUInt32BE();
-		const hash = createHash("md5");
+			const size = (readStream.read(4) as Buffer).readUInt32BE();
+			const hash = createHash("md5");
 
-		let id: BigInt, totalBytes = 0;
-		while (id = (readStream.read(8) as Buffer).readBigUInt64BE()) {
-			const buf = await this.network.fetchAttachment(id.toString());
-			gunzip.write(buf);
-			hash.update(buf);
-			totalBytes += buf.length;
-			progressCallback(totalBytes, size);
+			let id: BigInt, totalBytes = 0;
+			while (id = (readStream.read(8) as Buffer).readBigUInt64BE()) {
+				const buf = await this.network.fetchAttachment(id.toString());
+				gunzip.write(buf);
+				hash.update(buf);
+				totalBytes += buf.length;
+				progressCallback(totalBytes, size);
+			}
+
+			gunzip.end();
+			
+			const newChecksum = hash.digest();
+			const oldChecksum = readStream.read(newChecksum.byteLength) as Buffer;
+			if (!oldChecksum || oldChecksum.byteLength != newChecksum.byteLength) throw new Error("Virtual file is corrupted");
+			for (let ii = 0; ii < oldChecksum.byteLength; ii++)
+				if (newChecksum[ii] != oldChecksum[ii])
+					throw new Error("Downloaded file checksum doesn't match");
+
+			this.sema.release();
+		} catch (err) {
+			this.sema.release();
+			throw err;
 		}
-
-		gunzip.end();
-		
-		const newChecksum = hash.digest();
-		const oldChecksum = readStream.read(newChecksum.byteLength) as Buffer;
-		if (!oldChecksum || oldChecksum.byteLength != newChecksum.byteLength) throw new Error("Virtual file is corrupted");
-		for (let ii = 0; ii < oldChecksum.byteLength; ii++)
-			if (newChecksum[ii] != oldChecksum[ii])
-				throw new Error("Downloaded file checksum doesn't match");
 	}
 }

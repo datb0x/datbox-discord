@@ -9,6 +9,7 @@ export default class DatboxConfig {
 	readonly configPath: string;
 	channelId?: string;
 	root?: string;
+	concurrency?: number;
 	token?: string;
 
 	constructor(configPath: string) {
@@ -21,6 +22,7 @@ export default class DatboxConfig {
 				const data = JSON.parse(fs.readFileSync(this.configPath, "utf8"));
 				if (typeof data?.channelId == "string") this.channelId = data.channelId;
 				if (typeof data?.root == "string") this.root = data.root;
+				if (typeof data?.concurrency == "number") this.concurrency = data.concurrency;
 				if (typeof data?.token == "string") this.token = data.token;
 			} catch (err) {
 				console.error("Failed to parse config file");
@@ -37,6 +39,7 @@ export default class DatboxConfig {
 		fs.writeFileSync(this.configPath, JSON.stringify({
 			channelId: this.channelId,
 			root: this.root,
+			concurrency: this.concurrency,
 			token: this.token
 		}));
 	}

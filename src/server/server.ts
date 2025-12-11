@@ -7,22 +7,24 @@ import { name } from "../../package.json";
 import type { NoDataResponse, TransferResponse } from "../types";
 import type { Stats } from "fs";
 
-const options = server.opts<{ channel?: string, config: string, root?: string, token?: string }>();
+const options = server.opts<{ channel?: string, config: string, root?: string, concurrency: number, token?: string }>();
 const config = new DatboxConfig(options.config);
 config.load();
 
 config.channelId = options.channel ?? config.channelId;
 config.root = options.root ?? config.root;
+config.concurrency = options.concurrency ?? config.concurrency;
 config.token = options.token ?? process.env.TOKEN ?? config.token;
 if (!config.channelId) throw new Error("No channel ID supplied");
 if (!config.root) throw new Error("No root directory supplied");
+if (!config.concurrency) throw new Error("Concurrency must be larger than 0");
 if (!config.token) throw new Error(`No bot token supplied. Either add "TOKEN=<token>" to .env or '"token": "<token>"' to config`);
 
 config.save();
 
 const network = new DatboxNetwork(config.channelId);
 await network.login(config.token);
-const datbox = new DatboxFileSystem(config.root, network);
+const datbox = new DatboxFileSystem(config.root, config.concurrency, network);
 
 RootIPC.config.id = name;
 RootIPC.serve(() => {
