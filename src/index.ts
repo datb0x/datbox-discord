@@ -57,6 +57,12 @@ const remove = program.command("rm")
 	.argument("<virtual-path>", "Path to remove")
 	.action(() => { import("./client/remove"); });
 
+const mkdir = program.command("mkdir")
+	.description("Create a directory")
+	.option("-p, --parent", "Create parents if not exists")
+	.argument("<virtual-path>", "Path to create")
+	.action(() => { import("./client/mkdir"); });
+
 program.parse();
 
-export { server, upload, download, list, move, remove };
+export { server, upload, download, list, move, remove, mkdir };

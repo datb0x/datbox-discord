@@ -25,6 +25,10 @@ export default class DatboxFileSystem {
 		return fs.existsSync(path.join(this.root, file));
 	}
 
+	mkdirSync(dir: string, options?: { recursive?: boolean }) {
+		return fs.mkdirSync(path.join(this.root, dir), options);
+	}
+
 	async statAsync(file: string) {
 		const stat = fs.statSync(path.join(this.root, file));
 		if (stat.isFile()) {

@@ -81,6 +81,14 @@ RootIPC.serve(() => {
 			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as NoDataResponse);
 		}
 	});
+	RootIPC.server.on(`${name}.mkdir`, async (data: { virtualPath: string, recursive?: boolean }, socket) => {
+		try {
+			datbox.mkdirSync(data.virtualPath, { recursive: data.recursive });
+			RootIPC.server.emit(socket, `${name}.response`, { final: true } as NoDataResponse);
+		} catch (err) {
+			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as NoDataResponse);
+		}
+	});
 });
 
 RootIPC.server.start();
