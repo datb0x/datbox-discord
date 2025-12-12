@@ -5,34 +5,86 @@ import { createGunzip, createGzip } from "zlib";
 import type DatboxNetwork from "./network";
 import { createHash } from "crypto";
 import { Sema } from "async-sema";
+import sanitize from "path-sanitizer";
 
 const FILE_CHUNK_SIZE = 10 * 1024 * 1023; // less than 10 MiB
 
 export default class DatboxFileSystem {
+	readonly dataDir: string;
 	readonly root: string;
 	readonly sema: Sema;
 	readonly network: DatboxNetwork;
+	readonly fileReference: Map<string, number>;
 
-	constructor(root: string, maxJobs: number, network: DatboxNetwork) {
-		fs.mkdirSync(root, { recursive: true });
-		if (!fs.existsSync(root)) throw new Error("Failed to create root directory");
-		this.root = root;
+	constructor(dataDir: string, maxJobs: number, network: DatboxNetwork) {
+		this.dataDir = dataDir;
+		this.root = path.join(dataDir, "root");
+		fs.mkdirSync(this.root, { recursive: true });
+		if (!fs.existsSync(this.root)) throw new Error("Failed to create root directory");
 		this.sema = new Sema(maxJobs);
 		this.network = network;
+
+		// Files where their hashes are the same, indicating a copy reference
+		this.fileReference = new Map();
+		try {
+			const data = JSON.parse(fs.readFileSync(path.join(dataDir, "ref.json"), "utf8"));
+			for (const key in data) {
+				if (typeof data[key] != "number") continue;
+				this.fileReference.set(key, data[key]);
+			}
+		} catch (_err) {
+			// Ignored
+		}
 	}
 
-	existsSync(file: string) {
+	private sanitize(virtualPath: string) {
+		if (virtualPath == "..") return "/";
+		return sanitize(virtualPath, { notAllowedRegEx: /^\b$/g });
+	}
+
+	private async md5Async(physPath: string) {
+		const stat = fs.statSync(physPath);
+		if (!stat.isFile()) throw new Error("MD5 checksum can only be done on files");
+		return await new Promise<string>((res, rej) => {
+			const hash = createHash("md5");
+			const readStream = fs.createReadStream(physPath);
+
+			readStream.on("error", rej);
+			readStream.on("data", (chunk) => hash.update(chunk));
+			readStream.on("close", () => res(hash.digest("hex")));
+		});
+	}
+
+	private saveReference() {
+		try {
+			const writeStream = fs.createWriteStream(path.join(this.dataDir, "ref.json"), "utf8");
+			writeStream.write("{\n");
+			let first = true;
+			for (const [key, val] of this.fileReference) {
+				if (first) first = false;
+				else writeStream.write(",\n");
+				writeStream.write(`\t"${key}": ${val}`);
+			}
+			writeStream.write("\n}");
+		} catch (_err) {
+			// Ignored
+		}
+	}
+
+	private existsSync(file: string) {
 		return fs.existsSync(path.join(this.root, file));
 	}
 
 	mkdirSync(dir: string, options?: { recursive?: boolean }) {
+		dir = this.sanitize(dir);
 		return fs.mkdirSync(path.join(this.root, dir), options);
 	}
 
 	async statAsync(file: string) {
+		file = this.sanitize(file);
 		const stat = fs.statSync(path.join(this.root, file));
 		if (stat.isFile()) {
-			const readStream = fs.createReadStream(path.join(this.root, file));
+			const readStream = fs.createReadStream(path.join(this.root, file), { start: 0, end: 8 });
 			// Wait for readable
 			await new Promise<void>(res => readStream.on("readable", () => res()));
 			const size = (readStream.read(8) as Buffer).readBigUInt64BE();
@@ -42,8 +94,12 @@ export default class DatboxFileSystem {
 	}
 
 	async readdirAsync(file: string, long = false) {
+		file = this.sanitize(file);
 		if (fs.statSync(path.join(this.root, file)).isFile()) throw new Error(`Not a directory`);
-		if (!long) return fs.readdirSync(path.join(this.root, file));
+		if (!long) return fs.readdirSync(path.join(this.root, file)).map(entry => ({
+			name: entry,
+			stat: fs.statSync(path.join(this.root, file, entry))
+		}));
 		else return await Promise.all(fs.readdirSync(path.join(this.root, file)).map(entry => new Promise<{ name: string, stat: fs.Stats }>((res, rej) => {
 			this.statAsync(path.join(file, entry))
 				.then((stat) => res({ name: entry, stat }))
@@ -52,37 +108,67 @@ export default class DatboxFileSystem {
 	}
 
 	moveSync(src: string, dest: string) {
+		src = this.sanitize(src);
+		dest = this.sanitize(dest);
 		if (!this.existsSync(src)) throw new Error("Source file doesn't exist");
 		if (this.existsSync(dest)) throw new Error("Destination file already exists");
 
 		fs.renameSync(path.join(this.root, src), path.join(this.root, dest));
 	}
 
+	async cpAsync(src: string, dest: string, options?: { recursive?: boolean }) {
+		src = this.sanitize(src);
+		dest = this.sanitize(dest);
+		fs.cpSync(path.join(this.root, src), path.join(this.root, dest), { errorOnExist: true, recursive: options?.recursive });
+		// For all files under src, add 1 to reference
+		const recurse = async (dirOrFile: string) => {
+			const stat = fs.statSync(dirOrFile);
+			if (stat.isFile()) {
+				const hash = await this.md5Async(dirOrFile);
+				this.fileReference.set(hash, (this.fileReference.get(hash) || 1) + 1);
+			} else if (stat.isDirectory())
+				for (const file of fs.readdirSync(dirOrFile))
+					await recurse(path.join(dirOrFile, file));
+		};
+		await recurse(path.join(this.root, src));
+		this.saveReference();
+	}
+
 	async rmAsync(file: string, options?: { recursive?: boolean, remote?: boolean }) {
+		file = this.sanitize(file);
 		if (!this.existsSync(file)) throw new Error("File doesn't exist");
 		const stat = fs.statSync(path.join(this.root, file));
 		if (stat.isFile()) {
+			const hash = await this.md5Async(path.join(this.root, file));
+			const refs = (this.fileReference.get(hash) || 1) - 1;
 			if (options?.remote) {
-				const readStream = fs.createReadStream(path.join(this.root, file), { start: 8 });
-				// Wait for readable
-				await new Promise<void>(res => readStream.on("readable", () => res()));
+				if (refs) console.warn("Cannot delete remote. Another file referencing the same chunks exist");
+				else {
+					const readStream = fs.createReadStream(path.join(this.root, file), { start: 8 });
+					// Wait for readable
+					await new Promise<void>(res => readStream.on("readable", () => res()));
 
-				let ids: bigint[] = [];
-				let id: bigint;
-				while (id = (readStream.read(8) as Buffer).readBigUInt64BE())
-					ids.push(id);
-				
-				await this.network.deleteMessages(ids);
+					let ids: bigint[] = [];
+					let id: bigint;
+					while (id = (readStream.read(8) as Buffer).readBigUInt64BE())
+						ids.push(id);
+					
+					await this.network.deleteMessages(ids);
+				}
 			}
 			fs.rmSync(path.join(this.root, file));
+			if (refs > 1) this.fileReference.set(hash, refs);
+			else this.fileReference.delete(hash);
 		} else if (stat.isDirectory()) {
 			if (!options?.recursive) throw new Error("Cannot remove directory. Consider setting recursive to true");
 			for (const entry of fs.readdirSync(path.join(this.root, file)))
 				await this.rmAsync(path.join(file, entry), options);
 		}
+		this.saveReference();
 	}
 
 	async uploadAsync(physPath: string, virtPath: string, progressCallback: (current: number, total: number) => void) {
+		virtPath = this.sanitize(virtPath);
 		if (!fs.existsSync(physPath)) throw new Error("Failed to create directory");
 
 		const stat = fs.statSync(physPath);
@@ -185,6 +271,7 @@ export default class DatboxFileSystem {
 	}
 
 	async downloadAsync(virtPath: string, physPath: string, progressCallback: (current: number, total: number) => void) {
+		virtPath = this.sanitize(virtPath);
 		if (fs.existsSync(physPath)) throw new Error(`Physical path ${physPath} already exists. Not overwriting`);
 		if (!this.existsSync(virtPath)) throw new Error(`Virtual path ${path.join(this.root, virtPath)} doesn't exist`);
 

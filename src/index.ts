@@ -23,7 +23,7 @@ const server = program.command("server")
 	.option("-c, --channel <id>", "ID of the text channel where chunks will be stored")
 	.option("-C, --config <path>", `Local path to config file`, path.join(paths.config, "config.json"))
 	.option("-m, --concurrency <max>", "Maximum number upload and download jobs that can run in parallel", intParser, 10)
-	.option("-r, --root <path>", "Root for the virtual file system")
+	.option("-d, --data-dir <path>", "Directory where data should be stored")
 	.option("-t, --token <token>", "Discord bot token. This option not recommended. Use .env or config instead")
 	.action(() => { import("./server/server"); });
 
@@ -42,7 +42,7 @@ const download = program.command("download")
 const list = program.command("ls")
 	.description("List files in a directory")
 	.option("-l", "Use a long listing format")
-	.argument("<virtual-path>", "Virtual path of the directory")
+	.argument("[virtual-path]", "Virtual path of the directory")
 	.action(() => { import("./client/list"); });
 
 const move = program.command("mv")
@@ -64,6 +64,13 @@ const mkdir = program.command("mkdir")
 	.argument("<virtual-path>", "Path to create")
 	.action(() => { import("./client/mkdir"); });
 
+const copy = program.command("cp")
+	.description("Copy a file or directory (recursively)")
+	.option("-r, --recursive", "Remove files recursively")
+	.argument("<src>", "Source file to copy")
+	.argument("<dest>", "Destination to copy to")
+	.action(() => { import("./client/copy"); });
+
 program.parse();
 
-export { server, upload, download, list, move, remove, mkdir };
+export { server, upload, download, list, move, remove, mkdir, copy };
