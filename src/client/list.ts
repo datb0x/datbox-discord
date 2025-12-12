@@ -5,13 +5,13 @@ import { randomUUID } from "crypto";
 import type { NoDataResponse } from "../types";
 
 const virtualPath = list.args[0];
-const options = list.opts<{ l?: boolean }>();
+const options = list.opts<{ l?: boolean, h?: boolean }>();
 
 RootIPC.config.id = randomUUID();
 RootIPC.connectTo(name, () => {
 	const of = RootIPC.of[name]!;
 	of.on("connect", () => {
-		of.emit(`${name}.list`, { virtualPath, long: options.l });
+		of.emit(`${name}.list`, { virtualPath, long: options.l, human: options.h });
 	});
 	
 	of.on(`${name}.response`, (data: NoDataResponse) => {

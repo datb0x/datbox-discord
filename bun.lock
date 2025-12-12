@@ -10,6 +10,7 @@
         "commander": "^14.0.2",
         "discord.js": "^14.25.1",
         "env-paths": "^3.0.0",
+        "filesize": "^11.0.13",
         "node-ipc": "^12.0.0",
         "path-sanitizer": "^3.1.0",
       },
@@ -92,6 +93,8 @@
     "event-pubsub": ["event-pubsub@5.0.3", "", { "dependencies": { "copyfiles": "^2.4.0", "strong-type": "^0.1.3" } }, "sha512-2QiHxshejKgJrYMzSI9MEHrvhmzxBL+eLyiM5IiyjDBySkgwS2+tdtnO3gbx8pEisu/yOFCIhfCb63gCEu0yBQ=="],
 
     "fast-deep-equal": ["fast-deep-equal@3.1.3", "", {}, "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q=="],
+
+    "filesize": ["filesize@11.0.13", "", {}, "sha512-mYJ/qXKvREuO0uH8LTQJ6v7GsUvVOguqxg2VTwQUkyTPXXRRWPdjuUPVqdBrJQhvci48OHlNGRnux+Slr2Rnvw=="],
 
     "fs.realpath": ["fs.realpath@1.0.0", "", {}, "sha512-OO0pH2lK6a0hZnAdau5ItzHPI6pUlvI7jMVnxUQRtw4owF2wk8lOSabtGDCTP4Ggrg2MbGnWO9X8K1t4+fGMDw=="],
 

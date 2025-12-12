@@ -42,6 +42,7 @@ const download = program.command("download")
 const list = program.command("ls")
 	.description("List files in a directory")
 	.option("-l", "Use a long listing format")
+	.option("-h", "Human readable file size")
 	.argument("[virtual-path]", "Virtual path of the directory")
 	.action(() => { import("./client/list"); });
 

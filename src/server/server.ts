@@ -5,8 +5,7 @@ import { server } from "..";
 import RootIPC from "node-ipc";
 import { name } from "../../package.json";
 import type { NoDataResponse, TransferResponse } from "../types";
-import type { Stats } from "fs";
-import * as path from "path";
+import { filesize } from "filesize";
 
 const options = server.opts<{ channel?: string, config: string, dataDir?: string, concurrency: number, token?: string }>();
 const config = new DatboxConfig(options.config);
@@ -51,16 +50,19 @@ RootIPC.serve(() => {
 			RootIPC.server.emit(socket, `${name}.response`, { text: `${err}`, error: true, final: true } as TransferResponse);
 		}
 	});
-	RootIPC.server.on(`${name}.list`, async (data: { virtualPath?: string, long: boolean }, socket) => {
+	RootIPC.server.on(`${name}.list`, async (data: { virtualPath?: string, long: boolean, human: boolean }, socket) => {
 		try {
-			const results = await datbox.readdirAsync(data.virtualPath || "/", data.long);
+			const results = (await datbox.readdirAsync(data.virtualPath || "/", data.long)).sort((a, b) => a.name.localeCompare(b.name));
 			let body = "";
 			if (data.long) {
 				const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-				const byteStrLen = results.map(entry => entry.stat.size.toString().length).reduce((a, b) => Math.max(a, b));
+				const sizes = results.map(entry => data.human ?
+					filesize(entry.stat.size, { spacer: "", round: 1, standard: "jedec" }).slice(0, -1).toUpperCase() :
+					entry.stat.size.toString());
+				const byteStrLen = sizes.map(size => size.length).reduce((a, b) => Math.max(a, b));
 				results.forEach((entry, ii) => {
 					if (ii != 0) body += "\n";
-					body += entry.stat.size.toString().padStart(byteStrLen, " ");
+					body += sizes[ii]!.padStart(byteStrLen, " ");
 					const date = entry.stat.mtime;
 					body += " " + months[date.getMonth()];
 					body += " " + date.getDate().toString().padStart(2, " ");
