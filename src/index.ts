@@ -1,6 +1,6 @@
 import { InvalidArgumentError, program } from "commander";
 import * as path from "path";
-import { name, version } from "../package.json";
+import { name, description, version } from "../package.json";
 import envPaths from "env-paths";
 import RootIPC from "node-ipc";
 
@@ -15,6 +15,7 @@ const intParser = (value: string) => {
 
 program
 	.name(name)
+	.description(description)
 	.version(version);
 
 const server = program.command("server")

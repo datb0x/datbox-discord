@@ -1,9 +1,13 @@
 {
   "name": "datbox",
+	"description": "Use Discord as a storage service",
   "version": "0.0.1",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
+	"scripts": {
+		"compile": "bun build src/index.ts --compile --minify --sourcemap --outfile dist/datbox"
+	},
   "devDependencies": {
     "@types/bun": "latest",
     "@types/node-ipc": "^9.2.3"
