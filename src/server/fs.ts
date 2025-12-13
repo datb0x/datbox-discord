@@ -5,7 +5,6 @@ import { createGunzip, createGzip } from "zlib";
 import type DatboxNetwork from "./network";
 import { createHash } from "crypto";
 import { Sema } from "async-sema";
-import sanitize from "path-sanitizer";
 
 const FILE_CHUNK_SIZE = 10 * 1024 * 1023; // less than 10 MiB
 
@@ -38,8 +37,9 @@ export default class DatboxFileSystem {
 	}
 
 	private sanitize(virtualPath: string) {
-		if (virtualPath == "..") return "/";
-		return sanitize(virtualPath, { notAllowedRegEx: /^\b$/g });
+		const relative = path.relative(this.root, path.join(this.root, virtualPath));
+		if (relative.startsWith("..")) return "/";
+		return relative;
 	}
 
 	private async md5Async(physPath: string) {
@@ -289,7 +289,7 @@ export default class DatboxFileSystem {
 			const size = Number((readStream.read(8) as Buffer).readBigUInt64BE());
 			const hash = createHash("md5");
 
-			const estimatedChunks = Math.ceil((fs.statSync(path.join(this.root, virtPath)).size - 24) / 8);
+			const estimatedChunks = (fs.statSync(path.join(this.root, virtPath)).size - 24) / 8;
 			console.log("File has size %d bytes. Estimated chunks (post-gzip): %d", size, estimatedChunks);
 
 			// Setup gunzip to track progress
