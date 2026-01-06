@@ -213,10 +213,15 @@ export default class DatboxFileSystem {
 							const copy = Buffer.from(buf);
 							// Semaphore is taken. Wait for first upload to finish
 							if (this.network.sema.tryAcquire() === undefined) {
-								const id = await bufferedUpload.shift()!;
-								idBuf.writeBigUInt64BE(BigInt(id), 0);
-								writeStream.write(Buffer.from(idBuf));
-								process.stdout.write(`\rUploaded chunks: ${++chunks} / ${estimatedChunks}`);
+								try {
+									const id = await bufferedUpload.shift()!;
+									idBuf.writeBigUInt64BE(BigInt(id), 0);
+									writeStream.write(Buffer.from(idBuf));
+									process.stdout.write(`\rUploaded chunks: ${++chunks} / ${estimatedChunks}`);
+								} catch (err) {
+									callback(err as Error);
+									return;
+								}
 							}
 							bufferedUpload.push(this.network.sendAttachment(copy));
 							bufLength = 0;
