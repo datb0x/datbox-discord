@@ -5,9 +5,6 @@ import (
 	"log"
 
 	"github.com/adrg/xdg"
-	"github.com/knadh/koanf/parsers/json"
-	"github.com/knadh/koanf/providers/file"
-	"github.com/knadh/koanf/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -44,10 +41,4 @@ func init() {
 	serverCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
 	serverCmd.PersistentFlags().StringVarP(&dataDir, "data-dir", "d", "", "Directory where data should be stored")
 	serverCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use .env or config instead")
-}
-
-func loadConfig() (*koanf.Koanf, error) {
-	k := koanf.New(".")
-	err := k.Load(file.Provider(configPath), json.Parser())
-	return k, err
 }
