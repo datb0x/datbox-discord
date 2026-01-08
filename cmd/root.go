@@ -19,4 +19,7 @@ func init() {
 	cobra.OnInitialize()
 
 	rootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(uploadCmd)
+	rootCmd.AddCommand(downloadCmd)
+	rootCmd.AddCommand(listCmd)
 }

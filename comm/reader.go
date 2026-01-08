@@ -13,13 +13,13 @@ type IPCReader struct {
 	reader io.Reader
 }
 
-func NewReader(message *ipc.Message) IPCReader {
-	return IPCReader{
+func NewReader(message *ipc.Message) *IPCReader {
+	return &IPCReader{
 		reader: bytes.NewReader(message.Data),
 	}
 }
 
-func (ipc IPCReader) ReadByte() (byte, error) {
+func (ipc *IPCReader) ReadByte() (byte, error) {
 	buffer, err := ipc.ReadNBytes(1)
 	if err != nil {
 		return 0, err
@@ -27,7 +27,7 @@ func (ipc IPCReader) ReadByte() (byte, error) {
 	return buffer[0], err
 }
 
-func (ipc IPCReader) ReadNBytes(n int) ([]byte, error) {
+func (ipc *IPCReader) ReadNBytes(n int) ([]byte, error) {
 	buffer := make([]byte, n)
 	read, err := ipc.reader.Read(buffer)
 	if err != nil {
@@ -39,7 +39,7 @@ func (ipc IPCReader) ReadNBytes(n int) ([]byte, error) {
 	return buffer, nil
 }
 
-func (ipc IPCReader) ReadUInt16() (uint16, error) {
+func (ipc *IPCReader) ReadUInt16() (uint16, error) {
 	buffer, err := ipc.ReadNBytes(2)
 	if err != nil {
 		return 0, err
@@ -47,7 +47,15 @@ func (ipc IPCReader) ReadUInt16() (uint16, error) {
 	return binary.BigEndian.Uint16(buffer), nil
 }
 
-func (ipc IPCReader) ReadUInt32() (uint32, error) {
+func (ipc *IPCReader) ReadInt32() (int32, error) {
+	val, err := ipc.ReadUInt32()
+	if err != nil {
+		return 0, err
+	}
+	return int32(val), err
+}
+
+func (ipc *IPCReader) ReadUInt32() (uint32, error) {
 	buffer, err := ipc.ReadNBytes(4)
 	if err != nil {
 		return 0, err
@@ -55,7 +63,7 @@ func (ipc IPCReader) ReadUInt32() (uint32, error) {
 	return binary.BigEndian.Uint32(buffer), nil
 }
 
-func (ipc IPCReader) ReadUInt64() (uint64, error) {
+func (ipc *IPCReader) ReadUInt64() (uint64, error) {
 	buffer, err := ipc.ReadNBytes(8)
 	if err != nil {
 		return 0, err
@@ -63,7 +71,7 @@ func (ipc IPCReader) ReadUInt64() (uint64, error) {
 	return binary.BigEndian.Uint64(buffer), nil
 }
 
-func (ipc IPCReader) ReadUtf8() (string, error) {
+func (ipc *IPCReader) ReadUtf8() (string, error) {
 	length, err := ipc.ReadUInt16()
 	if err != nil {
 		return "", err

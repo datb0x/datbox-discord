@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -57,9 +58,18 @@ var (
 			for {
 				message, err := server.Read()
 				if err != nil {
+					if err.Error() != "Error: not enough data to decrypt" {
+						continue
+					}
 					return err
 				}
-				go handleMessage(server, message, fs)
+				if message.MsgType == -1 {
+					if message.Status == "Connected" {
+						server.Write(1, []byte{})
+					}
+				} else {
+					go handleMessage(server, message, fs)
+				}
 			}
 		},
 	}
@@ -71,20 +81,24 @@ func init() {
 		log.Fatalf("Error getting config path: %v", err)
 	}
 
-	serverCmd.PersistentFlags().StringVarP(&channelId, "channel", "c", "", "ID of the text channel where chunks will be stored")
-	serverCmd.PersistentFlags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
-	serverCmd.PersistentFlags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
-	serverCmd.PersistentFlags().StringVarP(&dataDir, "data-dir", "d", "", "Directory where data should be stored")
-	serverCmd.PersistentFlags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use .env or config instead")
+	serverCmd.Flags().StringVarP(&channelId, "channel", "c", "", "ID of the text channel where chunks will be stored")
+	serverCmd.Flags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
+	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
+	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", "", "Directory where data should be stored")
+	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use .env or config instead")
 }
 
 func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFileSystem) {
+	if message.Err != nil {
+		log.Println(message.Err)
+		return
+	}
 	if message.MsgType <= 0 || message.MsgType > 7 {
 		log.Printf("Unknown message type %d\n", message.MsgType)
 		return
 	}
 	reader := comm.NewReader(message)
-	id, err := reader.ReadUInt32()
+	id, err := reader.ReadInt32()
 	if err != nil {
 		return
 	}
@@ -187,7 +201,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				server.Write(int(id), writer.Data)
 				return
 			}
-			body := ""
+			var body strings.Builder
 			if long == 1 {
 				months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 				sizes := make([]string, len(entries))
@@ -206,35 +220,35 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				}
 				for ii, entry := range entries {
 					if ii != 0 {
-						body += "\n"
+						body.WriteString("\n")
 					}
-					body += fmt.Sprintf(fmt.Sprintf("%%%d0s", pad), sizes[ii])
+					fmt.Fprintf(&body, fmt.Sprintf("%%%d0s", pad), sizes[ii])
 					date := entry.Stat.ModTime()
-					body += " " + months[date.Month()-1]
-					body += fmt.Sprintf(" %02d", date.Day())
+					body.WriteString(" " + months[date.Month()-1])
+					fmt.Fprintf(&body, " %02d", date.Day())
 					if date.Year() < time.Now().Year() {
-						body += fmt.Sprintf("  %d", date.Year())
+						fmt.Fprintf(&body, "  %d", date.Year())
 					} else {
-						body += fmt.Sprintf(" %02d:%02d", date.Hour(), date.Minute())
+						fmt.Fprintf(&body, " %02d:%02d", date.Hour(), date.Minute())
 					}
 					if entry.Stat.IsDir() {
-						body += " " + entry.Name + "/"
+						body.WriteString(" " + entry.Name + "/")
 					} else {
-						body += " " + entry.Name
+						body.WriteString(" " + entry.Name)
 					}
 				}
 			} else {
 				for _, entry := range entries {
 					if entry.Stat.IsDir() {
-						body += " " + entry.Name + "/\t"
+						body.WriteString(" " + entry.Name + "/\t")
 					} else {
-						body += " " + entry.Name + "\t"
+						body.WriteString(" " + entry.Name + "\t")
 					}
 				}
 			}
 			writer.Clear()
 			writer.WriteByte(0)
-			writer.WriteUtf8(body)
+			writer.WriteUtf8(body.String())
 			server.Write(int(id), writer.Data)
 			break
 		}

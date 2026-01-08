@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
@@ -25,6 +26,8 @@ func NewNetwork(token string, channelId string) (*DatboxNetwork, error) {
 	if err != nil {
 		return network, err
 	}
+	session.Open()
+	log.Printf("%s is ready\n", session.State.User.Username)
 	network.session = session
 	network.channel, err = session.Channel(channelId)
 	if err != nil {
