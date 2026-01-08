@@ -1,4 +1,4 @@
-package main
+package datbox
 
 import "datbox/cmd"
 

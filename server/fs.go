@@ -48,14 +48,14 @@ type DirEntry struct {
 
 type UploadResult struct {
 	Path     string
-	chunks   int
-	checksum []byte
+	Chunks   int
+	Checksum []byte
 }
 
-func NewFileSystem(dataDir, root string, maxJobs int, network *DatboxNetwork) (*DatboxFileSystem, error) {
+func NewFileSystem(dataDir string, maxJobs int, network *DatboxNetwork) (*DatboxFileSystem, error) {
 	fs := new(DatboxFileSystem)
 	fs.dataDir = dataDir
-	fs.root = root
+	fs.root = path.Join(dataDir, "root")
 	fs.network = network
 	fs.fileReference = map[string]int{}
 
@@ -415,8 +415,8 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	log.Printf("Finished upload of %s\n", physicalPath)
 	return UploadResult{
 		Path:     path.Join("/", virtualPath),
-		chunks:   uploader.chunks,
-		checksum: checksum,
+		Chunks:   uploader.chunks,
+		Checksum: checksum,
 	}, nil
 }
 

@@ -18,16 +18,16 @@ type RawConfig struct {
 
 type DatboxConfig struct {
 	configPath string
-	raw        RawConfig
+	Raw        RawConfig
 }
 
 func NewConfig(configPath string, channelId, dataDir string, concurrency int, token string) *DatboxConfig {
 	config := new(DatboxConfig)
 	config.configPath = configPath
-	config.raw.ChannelId = channelId
-	config.raw.DataDir = dataDir
-	config.raw.Concurrency = concurrency
-	config.raw.Token = token
+	config.Raw.ChannelId = channelId
+	config.Raw.DataDir = dataDir
+	config.Raw.Concurrency = concurrency
+	config.Raw.Token = token
 	return config
 }
 
@@ -47,37 +47,37 @@ func (config *DatboxConfig) Load() error {
 		rawConfig := new(RawConfig)
 		json.Unmarshal(bytes, &rawConfig)
 		if rawConfig.ChannelId != "" {
-			config.raw.ChannelId = rawConfig.ChannelId
+			config.Raw.ChannelId = rawConfig.ChannelId
 		}
 		if rawConfig.DataDir != "" {
-			config.raw.DataDir = rawConfig.DataDir
+			config.Raw.DataDir = rawConfig.DataDir
 		}
 		if rawConfig.Concurrency != 0 {
-			config.raw.Concurrency = rawConfig.Concurrency
+			config.Raw.Concurrency = rawConfig.Concurrency
 		}
 		if rawConfig.Token != "" {
-			config.raw.Token = rawConfig.Token
+			config.Raw.Token = rawConfig.Token
 		}
 	} else {
 		log.Print("Configuration not found. Default settings will be used, except for channelId")
 	}
-	if config.raw.ChannelId == "" {
+	if config.Raw.ChannelId == "" {
 		return errors.New("Missing channelId")
 	}
-	if config.raw.DataDir == "" {
-		config.raw.DataDir = path.Join(path.Dir(config.configPath), "root")
+	if config.Raw.DataDir == "" {
+		config.Raw.DataDir = path.Join(path.Dir(config.configPath), "root")
 	}
-	if config.raw.Concurrency <= 0 {
+	if config.Raw.Concurrency <= 0 {
 		return errors.New("Invalid concurrency")
 	}
-	if config.raw.Token == "" {
+	if config.Raw.Token == "" {
 		return errors.New("Missing token")
 	}
 	return nil
 }
 
 func (config *DatboxConfig) Save() error {
-	bytes, err := json.MarshalIndent(config.raw, "", "\t")
+	bytes, err := json.MarshalIndent(config.Raw, "", "\t")
 	if err != nil {
 		return err
 	}
