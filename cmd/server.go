@@ -35,25 +35,25 @@ var (
 	serverCmd   = &cobra.Command{
 		Use:   "server",
 		Short: "Run the datbox local server",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Run: func(cmd *cobra.Command, args []string) {
 			config := server.NewConfig(configPath, channelId, dataDir, concurrency, token)
 			if err := config.Load(); err != nil {
-				return err
+				log.Fatalln(err)
 			}
 			if err := config.Save(); err != nil {
-				return err
+				log.Fatalln(err)
 			}
 			network, err := server.NewNetwork(config.Raw.Token, config.Raw.ChannelId)
 			if err != nil {
-				return err
+				log.Fatalln(err)
 			}
 			fs, err := server.NewFileSystem(config.Raw.DataDir, config.Raw.Concurrency, network)
 			if err != nil {
-				return err
+				log.Fatalln(err)
 			}
 			server, err := ipc.StartServer("datbox", nil)
 			if err != nil {
-				return err
+				log.Fatalln(err)
 			}
 			for {
 				message, err := server.Read()
@@ -61,7 +61,7 @@ var (
 					if err.Error() != "Error: not enough data to decrypt" {
 						continue
 					}
-					return err
+					log.Fatalln(err)
 				}
 				if message.MsgType == -1 {
 					if message.Status == "Connected" {
