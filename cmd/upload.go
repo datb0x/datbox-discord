@@ -53,7 +53,7 @@ var (
 					if err != nil {
 						log.Fatalln(err)
 					}
-					fmt.Printf("\rProgress: %03d%%", current/total)
+					fmt.Printf("\rProgress: %03d%% (%d / %d)", current*100/total, current, total)
 				}
 			}
 		},

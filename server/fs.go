@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -319,10 +320,11 @@ type Uploader struct {
 	writeFile       func(id uint64)
 }
 
-func (w Uploader) Write(data []byte) (n int, err error) {
+func (w *Uploader) Write(data []byte) (n int, err error) {
 	for _, b := range data {
 		w.buffer[w.bufferLength] = b
 		w.bufferLength++
+		fmt.Printf("\r%d / %d", w.bufferLength, len(w.buffer))
 		// Buffer is full. Send to Discord
 		if w.bufferLength >= len(w.buffer) {
 			id, err := w.network.SendAttachment(w.buffer)
@@ -335,11 +337,27 @@ func (w Uploader) Write(data []byte) (n int, err error) {
 			}
 			w.writeFile(parsed)
 			w.chunks++
-			log.Printf("\rUploaded chunks: %d / %d", w.chunks, w.estimatedChunks)
+			fmt.Printf("\rUploaded chunks: %d / %d", w.chunks, w.estimatedChunks)
 			w.bufferLength = 0
 		}
 	}
 	return len(data), nil
+}
+
+func (w *Uploader) Upload() error {
+	id, err := w.network.SendAttachment(w.buffer)
+	if err != nil {
+		return err
+	}
+	parsed, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return err
+	}
+	w.writeFile(parsed)
+	w.chunks++
+	fmt.Printf("\rUploaded chunks: %d / %d", w.chunks, w.estimatedChunks)
+	w.bufferLength = 0
+	return nil
 }
 
 func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCallback func(current, total int64)) (UploadResult, error) {
@@ -365,8 +383,13 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	estimatedChunks := math.Ceil(float64(stat.Size() / FileChunkSize))
 	log.Printf("Starting upload of %s\n", physicalPath)
 	log.Printf("Estimated chunks (pre-gzip): %d\n", int(estimatedChunks))
-	buf := make([]byte, 1024)
+	buf := make([]byte, 4096)
 
+	input, err := os.Open(physicalPath)
+	if err != nil {
+		return UploadResult{}, err
+	}
+	defer input.Close()
 	file, err := os.OpenFile(path.Join(fs.root, virtualPath), os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return UploadResult{}, err
@@ -394,10 +417,17 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 			file.Write(big.NewInt(int64(id)).Bytes())
 		},
 	}
-	writer := gzip.NewWriter(io.MultiWriter(uploader, hasher))
+	writer := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
 	totalBytes := int64(0)
-	for read, err := file.Read(buf); err == nil && read > 0; {
-		_, err := writer.Write(buf[0:read])
+	for {
+		read, err := input.Read(buf)
+		if err != nil {
+			return UploadResult{}, err
+		}
+		if read == 0 {
+			break
+		}
+		_, err = writer.Write(buf[0:read])
 		if err != nil {
 			return UploadResult{}, err
 		}
