@@ -45,9 +45,10 @@ func (ipc *IPCWriter) WriteUInt64(val uint64) {
 }
 
 func (ipc *IPCWriter) WriteUtf8(val string) {
-	length := len(val)
+	data := []byte(val)
+	length := len(data)
 	ipc.WriteUInt16(uint16(length))
-	ipc.WriteBytes([]byte(val))
+	ipc.WriteBytes(data)
 }
 
 func (ipc *IPCWriter) Clear() {

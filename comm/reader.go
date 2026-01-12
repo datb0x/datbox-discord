@@ -31,6 +31,9 @@ func (ipc *IPCReader) ReadNBytes(n int) ([]byte, error) {
 	buffer := make([]byte, n)
 	read, err := ipc.reader.Read(buffer)
 	if err != nil {
+		if err == io.EOF {
+			return buffer, nil
+		}
 		return nil, err
 	}
 	if read != n {

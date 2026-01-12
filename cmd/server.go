@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -76,15 +77,16 @@ var (
 )
 
 func init() {
-	configFilePath, err := xdg.ConfigFile("datbox/config.json")
+	configDir, err := xdg.ConfigFile("datbox")
 	if err != nil {
 		log.Fatalf("Error getting config path: %v", err)
 	}
+	configFilePath := path.Join(configDir, "config.json")
 
 	serverCmd.Flags().StringVarP(&channelId, "channel", "c", "", "ID of the text channel where chunks will be stored")
 	serverCmd.Flags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
 	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
-	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", "", "Directory where data should be stored")
+	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", configDir, "Directory where data should be stored")
 	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use .env or config instead")
 }
 

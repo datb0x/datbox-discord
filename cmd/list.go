@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"datbox/comm"
+	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -35,11 +36,13 @@ var (
 			}
 			err = client.Write(MSG_TYPE_LIST, writer.Data)
 			if err != nil {
+				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
 			for {
 				message, err := client.Read()
 				if err != nil {
+					log.Println("Failed to read data from ipc")
 					log.Fatalln(err)
 				}
 				if message.MsgType != int(id) {
@@ -55,7 +58,7 @@ var (
 					if err != nil {
 						log.Fatalln(err)
 					}
-					log.Println("\n" + str)
+					fmt.Println(str)
 					client.Close()
 					break
 				}

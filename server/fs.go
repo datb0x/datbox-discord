@@ -59,6 +59,8 @@ func NewFileSystem(dataDir string, maxJobs int, network *DatboxNetwork) (*Datbox
 	fs.network = network
 	fs.fileReference = map[string]int{}
 
+	os.MkdirAll(fs.root, 0755)
+
 	refPath := path.Join(dataDir, "ref.json")
 	if _, err := os.Stat(refPath); err == nil {
 		// config exists
