@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"datbox/comm"
+	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -40,7 +41,7 @@ var (
 					if err != nil {
 						log.Fatalln(err)
 					}
-					log.Println("\n" + str)
+					fmt.Println("\n" + str)
 					client.Close()
 					break
 				} else if status == 2 {
@@ -52,7 +53,7 @@ var (
 					if err != nil {
 						log.Fatalln(err)
 					}
-					log.Printf("\rProgress: %03d%%", current/total)
+					fmt.Printf("\rProgress: %03d%%", current/total)
 				}
 			}
 		},
