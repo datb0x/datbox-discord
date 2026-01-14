@@ -474,18 +474,6 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	defer file.Close()
 	writer, err := os.OpenFile(physicalPath, os.O_CREATE|os.O_WRONLY, 0644)
 	pipeReader, pipeWriter := io.Pipe()
-	// Defer initialization of gunzipper
-	gzipSignal := make(chan bool)
-	var gunzipper *gzip.Reader
-	go func() {
-		var err error
-		gunzipper, err = gzip.NewReader(pipeReader)
-		if err != nil {
-			gzipSignal <- false
-		} else {
-			gzipSignal <- true
-		}
-	}()
 
 	idBuf := make([]byte, 8)
 	buffer := make([]byte, 4096)
@@ -505,6 +493,8 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 
 	totalBytes := 0
 
+	// Lazy gzip initialization
+	var gunzipper *gzip.Reader
 	for read, err = file.Read(idBuf); read == 8 && err == nil; {
 		id := big.NewInt(0).SetBytes(idBuf).Uint64()
 		if id == 0 {
@@ -519,11 +509,11 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 		go pipeWriter.Write(data)
 		chunks++
 		log.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
-		// Wait for gunzipper initialization
+		// Init gunzipper if not exist
 		if gunzipper == nil {
-			result, ok := <-gzipSignal
-			if !result || !ok || gunzipper == nil {
-				return errors.New("Failed to create gzip decompressor")
+			gunzipper, err = gzip.NewReader(pipeReader)
+			if err != nil {
+				return err
 			}
 		}
 		for read, err = gunzipper.Read(buffer); read > 0 && err == nil; {
