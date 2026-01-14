@@ -340,7 +340,7 @@ func (w *Uploader) Write(data []byte) (n int, err error) {
 }
 
 func (w *Uploader) Upload() error {
-	id, err := w.network.SendAttachment(w.buffer)
+	id, err := w.network.SendAttachment(w.buffer[:w.bufferLength])
 	if err != nil {
 		return err
 	}
@@ -474,8 +474,8 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	defer file.Close()
 	writer, err := os.OpenFile(physicalPath, os.O_CREATE|os.O_WRONLY, 0644)
 	pipeReader, pipeWriter := io.Pipe()
-	gzipSignal := make(chan bool)
 	// Defer initialization of gunzipper
+	gzipSignal := make(chan bool)
 	var gunzipper *gzip.Reader
 	go func() {
 		var err error
@@ -500,7 +500,6 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	size := big.NewInt(0).SetBytes(idBuf).Uint64()
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
-	log.Println(stat.Size())
 	chunks := 0
 	log.Printf("File has size %d bytes. Estimated chunks (post-gzip): %d", size, estimatedChunks)
 
@@ -516,7 +515,8 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			return err
 		}
 		hasher.Write(data)
-		pipeWriter.Write(data)
+		// Prevent blocking by write. GUnzipper's Read will make sure this is written anyway.
+		go pipeWriter.Write(data)
 		chunks++
 		log.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
 		// Wait for gunzipper initialization
@@ -529,6 +529,7 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 		for read, err = gunzipper.Read(buffer); read > 0 && err == nil; {
 			writer.Write(buffer[:read])
 			totalBytes += read
+			//fmt.Printf("\r%d %d %d", read, totalBytes, size)
 			progressCallback(int64(totalBytes), int64(size))
 		}
 		if err != nil {
@@ -545,7 +546,7 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	newChecksum := hasher.Sum(nil)
 	oldChecksum := make([]byte, 16)
 	read, err = file.Read(oldChecksum)
-	if read != 16 || err != nil {
+	if read != 16 || err != nil && err != io.EOF {
 		return errors.New("Virtual file is corrupted")
 	}
 	for ii := range 16 {
