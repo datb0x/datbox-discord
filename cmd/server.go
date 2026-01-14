@@ -122,12 +122,18 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				server.Write(int(id), writer.Data)
 				return
 			}
-			result, err := fs.Upload(physicalPath, virtualPath, func(current, total int64) {
+			sending := false
+			result, err := fs.Upload(physicalPath, virtualPath, func(current, total int64, must bool) {
+				if sending && !must {
+					return
+				}
+				sending = true
 				writer.Clear()
 				writer.WriteByte(2)
 				writer.WriteUInt64(uint64(current))
 				writer.WriteUInt64(uint64(total))
 				server.Write(int(id), writer.Data)
+				sending = false
 			})
 			writer.Clear()
 			if err == nil {
