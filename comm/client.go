@@ -32,3 +32,21 @@ func StartClientAndWait() (*ipc.Client, int32, error) {
 	}
 	return client, id, nil
 }
+
+func WaitForMessage(client *ipc.Client, id int32) (*IPCReader, byte, error) {
+	for {
+		message, err := client.Read()
+		if err != nil {
+			return nil, 1, err
+		}
+		if message.MsgType != int(id) {
+			continue
+		}
+		reader := NewReader(message)
+		status, err := reader.ReadByte()
+		if err != nil {
+			return nil, 1, err
+		}
+		return reader, status, nil
+	}
+}

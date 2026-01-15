@@ -22,6 +22,14 @@ func (ipc *IPCWriter) WriteBytes(val []byte) {
 	ipc.Data = append(ipc.Data, val...)
 }
 
+func (ipc *IPCWriter) WriterBool(val bool) {
+	if val {
+		ipc.WriteByte(1)
+	} else {
+		ipc.WriteByte(0)
+	}
+}
+
 func (ipc *IPCWriter) WriteUInt16(val uint16) {
 	ipc.Data = binary.BigEndian.AppendUint16(ipc.Data, val)
 }

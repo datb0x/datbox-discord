@@ -22,4 +22,8 @@ func init() {
 	rootCmd.AddCommand(uploadCmd)
 	rootCmd.AddCommand(downloadCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(moveCmd)
+	rootCmd.AddCommand(removeCmd)
+	rootCmd.AddCommand(mkdirCmd)
+	rootCmd.AddCommand(copyCmd)
 }

@@ -2,18 +2,16 @@ package cmd
 
 import (
 	"datbox/comm"
-	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	long    = false
-	human   = false
-	listCmd = &cobra.Command{
-		Use:   "ls",
-		Short: "List files in a directory",
+	moveCmd = &cobra.Command{
+		Use:   "mv <src> <dest>",
+		Short: "Move a file or directory",
+		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
 			client, id, err := comm.StartClientAndWait()
 			if err != nil {
@@ -21,34 +19,24 @@ var (
 			}
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
-			writer.WriterBool(long)
-			writer.WriterBool(human)
-			if len(args) > 0 {
-				writer.WriteUtf8(args[0])
-			}
-			err = client.Write(MSG_TYPE_LIST, writer.Data)
+			writer.WriteUtf8(args[0])
+			writer.WriteUtf8(args[1])
+			err = client.Write(MSG_TYPE_MOVE, writer.Data)
 			if err != nil {
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			reader, status, err := comm.WaitForMessage(client, id)
+			_, status, err := comm.WaitForMessage(client, id)
 			if err != nil {
 				log.Println("Failed to read data from ipc")
 				log.Fatalln(err)
 			}
 			if status == 0 || status == 1 {
-				str, err := reader.ReadUtf8()
 				if err != nil {
 					log.Fatalln(err)
 				}
-				fmt.Println(str)
 				client.Close()
 			}
 		},
 	}
 )
-
-func init() {
-	listCmd.Flags().BoolVarP(&long, "long", "l", false, "Use a long listing format")
-	listCmd.Flags().BoolVarP(&human, "human", "H", false, "Human readable file size")
-}

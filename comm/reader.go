@@ -42,6 +42,14 @@ func (ipc *IPCReader) ReadNBytes(n int) ([]byte, error) {
 	return buffer, nil
 }
 
+func (ipc *IPCReader) ReadBool() (bool, error) {
+	data, err := ipc.ReadByte()
+	if err != nil {
+		return false, err
+	}
+	return data == 1, nil
+}
+
 func (ipc *IPCReader) ReadUInt16() (uint16, error) {
 	buffer, err := ipc.ReadNBytes(2)
 	if err != nil {
