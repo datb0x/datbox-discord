@@ -173,7 +173,7 @@ func (fs *DatboxFileSystem) ReadDir(virtualPath string, long ...bool) ([]DirEntr
 		return nil, err
 	}
 	for _, entry := range entries {
-		stat, err := fs.Stat(virtualPath, len(long) == 0 || !long[0])
+		stat, err := fs.Stat(path.Join(virtualPath, entry.Name()), len(long) == 0 || !long[0])
 		if err != nil {
 			return nil, err
 		}

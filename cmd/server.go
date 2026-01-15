@@ -214,23 +214,26 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 				sizes := make([]string, len(entries))
 				pad := 0
-				re := regexp.MustCompile(` \wB`)
-				for _, entry := range entries {
+				re := regexp.MustCompile(`( \w)?B`)
+				for ii, entry := range entries {
 					var size string
 					if human == 1 {
-						size = units.HumanSizeWithPrecision(float64(entry.Stat.Size()), 1)
-						size = re.ReplaceAllString(size, "")
+						size = units.HumanSize(float64(entry.Stat.Size()))
+						size = strings.ToUpper(re.ReplaceAllString(size, ""))
+						if len(size) > 4 {
+							size = size[0:2] + string(size[len(size)-1])
+						}
 					} else {
 						size = fmt.Sprint(entry.Stat.Size())
 					}
 					pad = max(pad, len(size))
-					sizes = append(sizes, size)
+					sizes[ii] = size
 				}
 				for ii, entry := range entries {
 					if ii != 0 {
 						body.WriteString("\n")
 					}
-					fmt.Fprintf(&body, fmt.Sprintf("%%%d0s", pad), sizes[ii])
+					fmt.Fprintf(&body, fmt.Sprintf("%%%ds", pad), sizes[ii])
 					date := entry.Stat.ModTime()
 					body.WriteString(" " + months[date.Month()-1])
 					fmt.Fprintf(&body, " %02d", date.Day())
