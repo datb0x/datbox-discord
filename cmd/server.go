@@ -77,7 +77,7 @@ var (
 )
 
 func init() {
-	configDir, err := xdg.ConfigFile("datbox")
+	configDir, err := xdg.ConfigFile("datbox-go")
 	if err != nil {
 		log.Fatalf("Error getting config path: %v", err)
 	}

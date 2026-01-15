@@ -1,7 +1,6 @@
 package server
 
 import (
-	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -323,7 +322,7 @@ type Uploader struct {
 func (w *Uploader) Write(data []byte) (n int, err error) {
 	start := 0
 	canRead := min(len(w.buffer)-w.bufferLength, len(data)-start)
-	for len(data)-start >= canRead {
+	for len(data)-start >= canRead && canRead != 0 {
 		copy(w.buffer[w.bufferLength:w.bufferLength+canRead], data[start:start+canRead])
 		w.bufferLength += canRead
 		start += canRead
@@ -334,7 +333,7 @@ func (w *Uploader) Write(data []byte) (n int, err error) {
 				return 0, err
 			}
 		}
-		canRead = min(len(w.buffer)-w.bufferLength, len(data))
+		canRead = min(len(w.buffer)-w.bufferLength, len(data)-start)
 	}
 	return len(data), nil
 }
@@ -377,7 +376,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	// Actual upload progress
 	estimatedChunks := math.Ceil(float64(stat.Size()) / FileChunkSize)
 	log.Printf("Starting upload of %s\n", physicalPath)
-	log.Printf("Estimated chunks (pre-gzip): %d\n", int(estimatedChunks))
+	log.Printf("Chunks: %d\n", int(estimatedChunks))
 	buf := make([]byte, 4096)
 
 	input, err := os.Open(physicalPath)
@@ -415,8 +414,6 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 			file.Write(octoBuf)
 		},
 	}
-	writer := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
-	defer writer.Close()
 	totalBytes := int64(0)
 	for {
 		read, err := input.Read(buf)
@@ -426,7 +423,8 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 		if read == 0 {
 			break
 		}
-		_, err = writer.Write(buf[0:read])
+		hasher.Write(buf[:read])
+		_, err = uploader.Write(buf[:read])
 		if err != nil {
 			return UploadResult{}, err
 		}
@@ -473,10 +471,8 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	}
 	defer file.Close()
 	writer, err := os.OpenFile(physicalPath, os.O_CREATE|os.O_WRONLY, 0644)
-	pipeReader, pipeWriter := io.Pipe()
 
 	idBuf := make([]byte, 8)
-	buffer := make([]byte, 4096)
 	read, err := file.Read(idBuf)
 	if err != nil {
 		return err
@@ -489,13 +485,18 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
 	chunks := 0
-	log.Printf("File has size %d bytes. Estimated chunks (post-gzip): %d", size, estimatedChunks)
+	log.Printf("File has size %d bytes. Chunks: %d", size, estimatedChunks)
 
-	totalBytes := 0
+	var totalBytes = 0
 
-	// Lazy gzip initialization
-	var gunzipper *gzip.Reader
-	for read, err = file.Read(idBuf); read == 8 && err == nil; {
+	for {
+		read, err = file.Read(idBuf)
+		if err != nil {
+			return err
+		}
+		if read != 8 {
+			return errors.New("Did not read 8 bytes")
+		}
 		id := big.NewInt(0).SetBytes(idBuf).Uint64()
 		if id == 0 {
 			break
@@ -505,33 +506,17 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			return err
 		}
 		hasher.Write(data)
-		// Prevent blocking by write. GUnzipper's Read will make sure this is written anyway.
-		go pipeWriter.Write(data)
-		chunks++
-		log.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
-		// Init gunzipper if not exist
-		if gunzipper == nil {
-			gunzipper, err = gzip.NewReader(pipeReader)
-			if err != nil {
-				return err
-			}
-		}
-		for read, err = gunzipper.Read(buffer); read > 0 && err == nil; {
-			writer.Write(buffer[:read])
-			totalBytes += read
-			//fmt.Printf("\r%d %d %d", read, totalBytes, size)
-			progressCallback(int64(totalBytes), int64(size))
-		}
+		_, err = writer.Write(data)
 		if err != nil {
 			return err
 		}
+		chunks++
+		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
+		totalBytes += len(data)
+		progressCallback(int64(totalBytes), int64(size))
 	}
-	log.Println()
-	if err != nil {
-		return err
-	}
+	fmt.Println()
 	writer.Close()
-	gunzipper.Close()
 
 	newChecksum := hasher.Sum(nil)
 	oldChecksum := make([]byte, 16)
