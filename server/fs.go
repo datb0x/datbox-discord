@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bufio"
+	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -376,7 +378,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	// Actual upload progress
 	estimatedChunks := math.Ceil(float64(stat.Size()) / FileChunkSize)
 	log.Printf("Starting upload of %s\n", physicalPath)
-	log.Printf("Chunks: %d\n", int(estimatedChunks))
+	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
 	buf := make([]byte, 4096)
 
 	input, err := os.Open(physicalPath)
@@ -414,6 +416,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 			file.Write(octoBuf)
 		},
 	}
+	gzipWriter := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
 	totalBytes := int64(0)
 	for {
 		read, err := input.Read(buf)
@@ -423,14 +426,14 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 		if read == 0 {
 			break
 		}
-		hasher.Write(buf[:read])
-		_, err = uploader.Write(buf[:read])
+		_, err = gzipWriter.Write(buf[:read])
 		if err != nil {
 			return UploadResult{}, err
 		}
 		totalBytes += int64(read)
 		go progressCallback(totalBytes, stat.Size(), false)
 	}
+	gzipWriter.Close()
 	progressCallback(totalBytes, stat.Size(), true)
 	err = uploader.Upload()
 	if err != nil {
@@ -454,7 +457,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	}, nil
 }
 
-func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressCallback func(current, total int64)) error {
+func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressCallback func(current, total int64, must bool)) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if _, err := os.Stat(physicalPath); err == nil {
 		return errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
@@ -487,7 +490,39 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	chunks := 0
 	log.Printf("File has size %d bytes. Chunks: %d", size, estimatedChunks)
 
-	var totalBytes = 0
+	pipeReader, pipeWriter := io.Pipe()
+
+	// Put gzip decompressor in goroutine
+	gzipSignal := make(chan error)
+	go func() {
+		totalBytes := 0
+		buf := make([]byte, 4096)
+		gzipReader, err := gzip.NewReader(bufio.NewReaderSize(pipeReader, FileChunkSize))
+		if err != nil {
+			gzipSignal <- err
+			return
+		}
+		defer gzipReader.Close()
+		for {
+			read, err := gzipReader.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				gzipSignal <- err
+				return
+			}
+			if read == 0 {
+				break
+			}
+			totalBytes += read
+			go progressCallback(int64(totalBytes), int64(size), false)
+			writer.Write(buf[:read])
+		}
+		progressCallback(int64(totalBytes), int64(size), true)
+		writer.Close()
+		gzipSignal <- nil
+	}()
 
 	for {
 		read, err = file.Read(idBuf)
@@ -506,17 +541,25 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			return err
 		}
 		hasher.Write(data)
-		_, err = writer.Write(data)
-		if err != nil {
-			return err
+		// Check if there's error in gzip
+		select {
+		case err, ok := <-gzipSignal:
+			if ok && err != nil {
+				return err
+			}
+		default:
 		}
+		pipeWriter.Write(data)
 		chunks++
 		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
-		totalBytes += len(data)
-		progressCallback(int64(totalBytes), int64(size))
 	}
 	fmt.Println()
-	writer.Close()
+	pipeWriter.Close()
+	// Wait for gzip to be done
+	err = <-gzipSignal
+	if err != nil {
+		return err
+	}
 
 	newChecksum := hasher.Sum(nil)
 	oldChecksum := make([]byte, 16)
