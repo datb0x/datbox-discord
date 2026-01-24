@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"datbox/comm"
+	"datbox/network"
 	"datbox/server"
 	"encoding/hex"
 	"fmt"
@@ -44,7 +45,7 @@ var (
 			if err := config.Save(); err != nil {
 				log.Fatalln(err)
 			}
-			network, err := server.NewNetwork(config.Raw.Token, config.Raw.ChannelId)
+			network, err := network.NewNetwork(config.Raw.Token, config.Raw.ChannelId)
 			if err != nil {
 				log.Fatalln(err)
 			}

@@ -1,13 +1,12 @@
 package server
 
 import (
-	"bufio"
-	"compress/gzip"
 	"crypto/md5"
+	"datbox/network"
+	"datbox/virtualfile"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math"
@@ -22,12 +21,10 @@ import (
 	cp "github.com/otiai10/copy"
 )
 
-const FileChunkSize = 10 * 1024 * 1023
-
 type DatboxFileSystem struct {
 	dataDir       string
 	root          string
-	network       *DatboxNetwork
+	network       *network.DatboxNetwork
 	fileReference map[string]int
 }
 
@@ -54,7 +51,7 @@ type UploadResult struct {
 	Checksum []byte
 }
 
-func NewFileSystem(dataDir string, maxJobs int, network *DatboxNetwork) (*DatboxFileSystem, error) {
+func NewFileSystem(dataDir string, maxJobs int, network *network.DatboxNetwork) (*DatboxFileSystem, error) {
 	fs := new(DatboxFileSystem)
 	fs.dataDir = dataDir
 	fs.root = path.Join(dataDir, "root")
@@ -104,11 +101,11 @@ func (fs *DatboxFileSystem) md5(physicalPath string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	data := make([]byte, 1024)
-	var read int
-	for read, err = file.Read(data); read > 0 && err == nil; {
-		hasher.Write(data[0:read])
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
 	}
+	hasher.Write(data)
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -249,7 +246,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	if !fs.exists(virtualPath) {
 		return errors.New("File doesn't exist")
 	}
-	stat, err := fs.Stat(path.Join(fs.root, virtualPath), true)
+	stat, err := fs.Stat(virtualPath, true)
 	if err != nil {
 		return err
 	}
@@ -312,50 +309,6 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	return fs.saveReference()
 }
 
-type Uploader struct {
-	buffer          []byte
-	bufferLength    int
-	chunks          int
-	estimatedChunks int
-	network         *DatboxNetwork
-	writeFile       func(id uint64)
-}
-
-func (w *Uploader) Write(data []byte) (n int, err error) {
-	start := 0
-	canRead := min(len(w.buffer)-w.bufferLength, len(data)-start)
-	for len(data)-start >= canRead && canRead != 0 {
-		copy(w.buffer[w.bufferLength:w.bufferLength+canRead], data[start:start+canRead])
-		w.bufferLength += canRead
-		start += canRead
-		// Buffer is full. Send to Discord
-		if w.bufferLength >= len(w.buffer) {
-			err := w.Upload()
-			if err != nil {
-				return 0, err
-			}
-		}
-		canRead = min(len(w.buffer)-w.bufferLength, len(data)-start)
-	}
-	return len(data), nil
-}
-
-func (w *Uploader) Upload() error {
-	id, err := w.network.SendAttachment(w.buffer[:w.bufferLength])
-	if err != nil {
-		return err
-	}
-	parsed, err := strconv.ParseUint(id, 10, 64)
-	if err != nil {
-		return err
-	}
-	w.writeFile(parsed)
-	w.chunks++
-	fmt.Printf("\rUploaded chunks: %d / %d", w.chunks, w.estimatedChunks)
-	w.bufferLength = 0
-	return nil
-}
-
 func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCallback func(current, total int64, must bool)) (UploadResult, error) {
 	virtualPath = fs.sanitize(virtualPath)
 	stat, err := os.Stat(physicalPath)
@@ -376,84 +329,42 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	}
 
 	// Actual upload progress
-	estimatedChunks := math.Ceil(float64(stat.Size()) / FileChunkSize)
+	estimatedChunks := math.Ceil(float64(stat.Size()) / virtualfile.FileChunkSize)
 	log.Printf("Starting upload of %s\n", physicalPath)
 	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
-	buf := make([]byte, 4096)
 
-	input, err := os.Open(physicalPath)
+	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network)
 	if err != nil {
 		return UploadResult{}, err
 	}
-	defer input.Close()
-	file, err := os.OpenFile(path.Join(fs.root, virtualPath), os.O_CREATE|os.O_WRONLY, 0644)
+	err = file.OpenOrCreate()
 	if err != nil {
 		return UploadResult{}, err
 	}
-	// Write file size
-	octoBuf := make([]byte, 8)
-	big.NewInt(stat.Size()).FillBytes(octoBuf)
-	_, err = file.Write(octoBuf)
-	if err != nil {
-		return UploadResult{}, err
+	if !file.WriteMode() {
+		return UploadResult{}, errors.New("File should be in write mode")
 	}
-	// Piggyback file checksum
-	hasher := md5.New()
 
-	reader, err := os.Open(physicalPath)
-	if err != nil {
-		return UploadResult{}, err
-	}
-	defer reader.Close()
-	uploader := Uploader{
-		buffer:          make([]byte, FileChunkSize),
-		bufferLength:    0,
-		chunks:          0,
-		estimatedChunks: int(estimatedChunks),
-		network:         fs.network,
-		writeFile: func(id uint64) {
-			big.NewInt(int64(id)).FillBytes(octoBuf)
-			file.Write(octoBuf)
-		},
-	}
-	gzipWriter := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
-	totalBytes := int64(0)
+	eventSignal := make(chan virtualfile.TransferEvent)
+	go file.UploadFrom(physicalPath, eventSignal)
 	for {
-		read, err := input.Read(buf)
-		if err != nil && err != io.EOF {
-			return UploadResult{}, err
-		}
-		if read == 0 {
+		event := <-eventSignal
+		if event.Done {
+			if event.Err != nil {
+				return UploadResult{}, event.Err
+			}
+			progressCallback(1, 1, true)
 			break
+		} else {
+			progressCallback(event.Current, event.Total, false)
 		}
-		_, err = gzipWriter.Write(buf[:read])
-		if err != nil {
-			return UploadResult{}, err
-		}
-		totalBytes += int64(read)
-		go progressCallback(totalBytes, stat.Size(), false)
 	}
-	gzipWriter.Close()
-	progressCallback(totalBytes, stat.Size(), true)
-	err = uploader.Upload()
-	if err != nil {
-		return UploadResult{}, err
-	}
-	fmt.Println()
-
-	// Write separator
-	big.NewInt(0).FillBytes(octoBuf)
-	file.Write(octoBuf)
-	// Write file checksum at the end
-	checksum := hasher.Sum(nil)
-	file.Write(checksum)
-	file.Close()
 
 	log.Printf("Finished upload of %s\n", physicalPath)
 	return UploadResult{
 		Path:     path.Join("/", virtualPath),
-		Chunks:   uploader.chunks,
-		Checksum: checksum,
+		Chunks:   file.Chunks(),
+		Checksum: file.Checksum(),
 	}, nil
 }
 
@@ -462,114 +373,36 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 	if _, err := os.Stat(physicalPath); err == nil {
 		return errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
 	}
-	stat, err := fs.Stat(virtualPath, true)
+	_, err := fs.Stat(virtualPath, true)
 	if err != nil {
 		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
 	}
 
 	log.Printf("Starting download of %s", virtualPath)
-	file, err := os.Open(path.Join(fs.root, virtualPath))
+	file, err := virtualfile.OpenVirtualFile(path.Join(fs.root, virtualPath), fs.network)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	writer, err := os.OpenFile(physicalPath, os.O_CREATE|os.O_WRONLY, 0644)
-
-	idBuf := make([]byte, 8)
-	read, err := file.Read(idBuf)
+	err = file.OpenOrCreate()
 	if err != nil {
 		return err
 	}
-	if read != 8 {
-		return errors.New("Did not read 8 bytes")
+	if file.WriteMode() {
+		return errors.New("File should not be in write mode")
 	}
-
-	size := big.NewInt(0).SetBytes(idBuf).Uint64()
-	hasher := md5.New()
-	estimatedChunks := (stat.Size() - 32) / 8
-	chunks := 0
-	log.Printf("File has size %d bytes. Chunks: %d", size, estimatedChunks)
-
-	pipeReader, pipeWriter := io.Pipe()
-
-	// Put gzip decompressor in goroutine
-	gzipSignal := make(chan error)
-	go func() {
-		totalBytes := 0
-		buf := make([]byte, 4096)
-		gzipReader, err := gzip.NewReader(bufio.NewReaderSize(pipeReader, FileChunkSize))
-		if err != nil {
-			gzipSignal <- err
-			return
-		}
-		defer gzipReader.Close()
-		for {
-			read, err := gzipReader.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				gzipSignal <- err
-				return
-			}
-			if read == 0 {
-				break
-			}
-			totalBytes += read
-			go progressCallback(int64(totalBytes), int64(size), false)
-			writer.Write(buf[:read])
-		}
-		progressCallback(int64(totalBytes), int64(size), true)
-		writer.Close()
-		gzipSignal <- nil
-	}()
-
+	eventSignal := make(chan virtualfile.TransferEvent)
+	go file.DownloadTo(physicalPath, eventSignal)
 	for {
-		read, err = file.Read(idBuf)
-		if err != nil {
-			return err
-		}
-		if read != 8 {
-			return errors.New("Did not read 8 bytes")
-		}
-		id := big.NewInt(0).SetBytes(idBuf).Uint64()
-		if id == 0 {
-			break
-		}
-		data, err := fs.network.FetchAttachment(strconv.FormatUint(id, 10))
-		if err != nil {
-			return err
-		}
-		hasher.Write(data)
-		// Check if there's error in gzip
-		select {
-		case err, ok := <-gzipSignal:
-			if ok && err != nil {
-				return err
+		event := <-eventSignal
+		if event.Done {
+			if event.Err != nil {
+				return event.Err
 			}
-		default:
-		}
-		pipeWriter.Write(data)
-		chunks++
-		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
-	}
-	fmt.Println()
-	pipeWriter.Close()
-	// Wait for gzip to be done
-	err = <-gzipSignal
-	if err != nil {
-		return err
-	}
-
-	newChecksum := hasher.Sum(nil)
-	oldChecksum := make([]byte, 16)
-	read, err = file.Read(oldChecksum)
-	if read != 16 || err != nil && err != io.EOF {
-		return errors.New("Virtual file is corrupted")
-	}
-	for ii := range 16 {
-		if newChecksum[ii] != oldChecksum[ii] {
-			return errors.New("Downloaded file checksum doesn't match")
+			progressCallback(1, 1, true)
+			break
+		} else {
+			progressCallback(event.Current, event.Total, false)
 		}
 	}
 	log.Printf("Finished download of %s\n", virtualPath)

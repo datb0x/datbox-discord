@@ -1,0 +1,368 @@
+package virtualfile
+
+import (
+	"bufio"
+	"compress/gzip"
+	"crypto/md5"
+	"datbox/network"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math/big"
+	"os"
+	"strconv"
+)
+
+type V0File struct {
+	Path      string
+	writeMode bool
+	network   *network.DatboxNetwork
+	file      *os.File
+	version   int
+	chunks    int
+	size      uint64
+	octoBuf   []byte
+	checksum  []byte
+}
+
+func NewV0File(path string, network *network.DatboxNetwork) *V0File {
+	file := new(V0File)
+	file.Path = path
+	file.network = network
+	return file
+}
+
+func (f *V0File) Version() int {
+	return 0
+}
+
+func (f *V0File) Chunks() int {
+	return f.chunks
+}
+
+func (f *V0File) Size() int64 {
+	return int64(f.size)
+}
+
+func (f *V0File) WriteMode() bool {
+	return f.writeMode
+}
+
+func (f *V0File) Checksum() []byte {
+	return f.checksum
+}
+
+func (f *V0File) OpenOrCreate() error {
+	stat, err := os.Stat(f.Path)
+	if err != nil {
+		// Not exist
+		file, err := os.Create(f.Path)
+		if err != nil {
+			return err
+		}
+		f.file = file
+		f.writeMode = true
+	} else {
+		// Exists
+		file, err := os.Open(f.Path)
+		if err != nil {
+			return err
+		}
+		f.file = file
+		f.writeMode = false
+		if (stat.Size() % 8) != 0 {
+			return errors.New("File is not version 0")
+		}
+		f.chunks = int((stat.Size() - 32) / 8)
+		// Read header
+		f.octoBuf = make([]byte, 8)
+		read, err := file.Read(f.octoBuf)
+		if err != nil {
+			file.Close()
+			return err
+		}
+		if read != 8 {
+			file.Close()
+			return errors.New("Did not read 8 bytes")
+		}
+		f.size = big.NewInt(0).SetBytes(f.octoBuf).Uint64()
+	}
+	return nil
+}
+
+func (f *V0File) Close() error {
+	if f.file != nil {
+		return f.file.Close()
+	}
+	return errors.New("No file opened")
+}
+
+func (f *V0File) WriteMsgID(id uint64) error {
+	if f.file == nil {
+		return errors.New("No file opened")
+	}
+
+	big.NewInt(int64(id)).FillBytes(f.octoBuf)
+	wrote, err := f.file.Write(f.octoBuf)
+	if err != nil {
+		return err
+	}
+	if wrote != 8 {
+		return errors.New("Did not write 8 bytes")
+	}
+	return nil
+}
+
+func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
+	var err error
+	defer func() {
+		channel <- TransferEvent{
+			Done: true,
+			Err:  err,
+		}
+	}()
+	if f.file == nil {
+		err = errors.New("No file opened")
+		return
+	}
+	buf := make([]byte, 4096)
+	// Write file size
+	stat, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	octoBuf := make([]byte, 8)
+	big.NewInt(stat.Size()).FillBytes(octoBuf)
+	_, err = f.file.Write(octoBuf)
+	if err != nil {
+		return
+	}
+	// Piggyback file checksum
+	hasher := md5.New()
+
+	input, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer input.Close()
+	uploader := Uploader{
+		buffer:          make([]byte, FileChunkSize),
+		bufferLength:    0,
+		chunks:          0,
+		estimatedChunks: int(stat.Size() / FileChunkSize),
+		network:         f.network,
+		writeFile: func(id uint64) {
+			big.NewInt(int64(id)).FillBytes(octoBuf)
+			f.file.Write(octoBuf)
+		},
+	}
+	gzipWriter := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
+	totalBytes := int64(0)
+	for {
+		read, err := input.Read(buf)
+		if err != nil && err != io.EOF {
+			return
+		}
+		if read == 0 {
+			break
+		}
+		_, err = gzipWriter.Write(buf[:read])
+		if err != nil {
+			return
+		}
+		totalBytes += int64(read)
+		channel <- TransferEvent{
+			Current: totalBytes,
+			Total:   stat.Size(),
+		}
+	}
+	gzipWriter.Close()
+	channel <- TransferEvent{
+		Current: totalBytes,
+		Total:   stat.Size(),
+	}
+	err = uploader.Upload()
+	if err != nil {
+		return
+	}
+	fmt.Println()
+
+	// Write separator
+	big.NewInt(0).FillBytes(octoBuf)
+	f.file.Write(octoBuf)
+	// Write file checksum at the end
+	f.checksum = hasher.Sum(nil)
+	f.file.Write(f.checksum)
+	err = nil
+}
+
+func (f *V0File) ReadMsgID() (uint64, error) {
+	if f.file == nil {
+		return 0, errors.New("No file opened")
+	}
+	read, err := f.file.Read(f.octoBuf)
+	if err != nil {
+		return 0, err
+	}
+	if read != 8 {
+		return 0, errors.New("Did not read 8 bytes")
+	}
+	return big.NewInt(0).SetBytes(f.octoBuf).Uint64(), nil
+}
+
+func (f *V0File) ReadPrevMsgID() (uint64, error) {
+	if f.file == nil {
+		return 0, errors.New("No file opened")
+	}
+	_, err := f.file.Seek(-16, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	return f.ReadMsgID()
+}
+
+func (f *V0File) Verify(checksum []byte) (bool, error) {
+	if f.file == nil {
+		return false, errors.New("No file opened")
+	}
+	buf := make([]byte, len(checksum))
+	read, err := f.file.Read(buf)
+	if read != 16 || err != nil && err != io.EOF {
+		return false, errors.New("Virtual file is corrupted")
+	}
+	for ii := range 16 {
+		if buf[ii] != checksum[ii] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (f *V0File) GetNextChunk() ([]byte, error) {
+	return nil, errors.New("Version 0 files cannot be decompressed by chunks")
+}
+
+func (f *V0File) GetNextChunkRaw() ([]byte, error) {
+	id, err := f.ReadMsgID()
+	if err != nil {
+		return nil, err
+	}
+	if id == 0 {
+		return nil, io.EOF
+	}
+	return f.network.FetchAttachment(strconv.FormatUint(id, 10))
+}
+
+func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
+	var err error
+	defer func() {
+		channel <- TransferEvent{
+			Done: true,
+			Err:  err,
+		}
+	}()
+	if f.file == nil {
+		err = errors.New("No file opened")
+		return
+	}
+	writer, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer writer.Close()
+	stat, err := os.Stat(f.Path)
+	if err != nil {
+		return
+	}
+
+	hasher := md5.New()
+	estimatedChunks := (stat.Size() - 32) / 8
+	chunks := 0
+	log.Printf("File has size %d bytes. Chunks: %d", f.Size(), estimatedChunks)
+
+	pipeReader, pipeWriter := io.Pipe()
+
+	// Put gzip decompressor in goroutine
+	gzipSignal := make(chan error)
+	go func() {
+		totalBytes := 0
+		buf := make([]byte, 4096)
+		gzipReader, err := gzip.NewReader(bufio.NewReaderSize(pipeReader, FileChunkSize))
+		if err != nil {
+			gzipSignal <- err
+			return
+		}
+		defer gzipReader.Close()
+		for {
+			read, err := gzipReader.Read(buf)
+			if err != nil && err != io.EOF {
+				gzipSignal <- err
+				return
+			}
+			if read == 0 {
+				break
+			}
+			totalBytes += read
+			channel <- TransferEvent{
+				Current: int64(totalBytes),
+				Total:   f.Size(),
+			}
+			_, err = writer.Write(buf[:read])
+			if err != nil {
+				gzipSignal <- err
+				return
+			}
+		}
+		channel <- TransferEvent{
+			Current: int64(totalBytes),
+			Total:   f.Size(),
+		}
+		gzipSignal <- nil
+	}()
+
+	var data []byte
+	var ok bool
+	for {
+		data, err = f.GetNextChunkRaw()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return
+		}
+		hasher.Write(data)
+		// Check if there's error in gzip
+		select {
+		case err, ok = <-gzipSignal:
+			if ok && err != nil {
+				return
+			}
+		default:
+		}
+		_, err = pipeWriter.Write(data)
+		if err != nil {
+			return
+		}
+		chunks++
+		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
+	}
+	pipeWriter.Close()
+	// Wait for gzip to be done
+	err = <-gzipSignal
+	if err != nil {
+		return
+	}
+	fmt.Println()
+
+	newChecksum := hasher.Sum(nil)
+	matched, err := f.Verify(newChecksum)
+	if err != nil {
+		return
+	}
+	if !matched {
+		err = errors.New("Downloaded file checksum doesn't match")
+		return
+	}
+	err = nil
+}
