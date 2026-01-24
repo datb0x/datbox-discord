@@ -124,15 +124,14 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				return
 			}
 			sending := false
-			result, err := fs.Upload(physicalPath, virtualPath, func(current, total int64, must bool) {
+			result, err := fs.Upload(physicalPath, virtualPath, func(progress float32, must bool) {
 				if sending && !must {
 					return
 				}
 				sending = true
 				writer.Clear()
 				writer.WriteByte(2)
-				writer.WriteUInt64(uint64(current))
-				writer.WriteUInt64(uint64(total))
+				writer.WriteFloat32(progress)
 				server.Write(int(id), writer.Data)
 				sending = false
 			})
@@ -165,15 +164,14 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				return
 			}
 			sending := false
-			err = fs.Download(virtualPath, physicalPath, func(current, total int64, must bool) {
+			err = fs.Download(virtualPath, physicalPath, func(progress float32, must bool) {
 				if sending && !must {
 					return
 				}
 				sending = true
 				writer.Clear()
 				writer.WriteByte(2)
-				writer.WriteUInt64(uint64(current))
-				writer.WriteUInt64(uint64(total))
+				writer.WriteFloat32(progress)
 				server.Write(int(id), writer.Data)
 				sending = false
 			})

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"math"
 
 	ipc "github.com/james-barrow/golang-ipc"
 )
@@ -80,6 +81,14 @@ func (ipc *IPCReader) ReadUInt64() (uint64, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint64(buffer), nil
+}
+
+func (ipc *IPCReader) ReadFloat32() (float32, error) {
+	bits, err := ipc.ReadUInt32()
+	if err != nil {
+		return 0, err
+	}
+	return math.Float32frombits(bits), nil
 }
 
 func (ipc *IPCReader) ReadUtf8() (string, error) {

@@ -2,6 +2,7 @@ package comm
 
 import (
 	"encoding/binary"
+	"math"
 )
 
 type IPCWriter struct {
@@ -50,6 +51,10 @@ func (ipc *IPCWriter) WriteUInt32(val uint32) {
 
 func (ipc *IPCWriter) WriteUInt64(val uint64) {
 	ipc.Data = binary.BigEndian.AppendUint64(ipc.Data, val)
+}
+
+func (ipc *IPCWriter) WriteFloat32(val float32) {
+	ipc.WriteUInt32(math.Float32bits(val))
 }
 
 func (ipc *IPCWriter) WriteUtf8(val string) {

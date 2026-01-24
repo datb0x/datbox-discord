@@ -309,7 +309,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	return fs.saveReference()
 }
 
-func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCallback func(current, total int64, must bool)) (UploadResult, error) {
+func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCallback func(progress float32, must bool)) (UploadResult, error) {
 	virtualPath = fs.sanitize(virtualPath)
 	stat, err := os.Stat(physicalPath)
 	if err != nil {
@@ -353,10 +353,10 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 			if event.Err != nil {
 				return UploadResult{}, event.Err
 			}
-			progressCallback(1, 1, true)
+			progressCallback(1, true)
 			break
 		} else {
-			progressCallback(event.Current, event.Total, false)
+			go progressCallback(float32(event.Current)/float32(event.Total), false)
 		}
 	}
 
@@ -368,7 +368,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 	}, nil
 }
 
-func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressCallback func(current, total int64, must bool)) error {
+func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressCallback func(progress float32, must bool)) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if _, err := os.Stat(physicalPath); err == nil {
 		return errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
@@ -399,10 +399,10 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			if event.Err != nil {
 				return event.Err
 			}
-			progressCallback(1, 1, true)
+			progressCallback(1, true)
 			break
 		} else {
-			progressCallback(event.Current, event.Total, false)
+			go progressCallback(float32(event.Current)/float32(event.Total), false)
 		}
 	}
 	log.Printf("Finished download of %s\n", virtualPath)

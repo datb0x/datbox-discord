@@ -45,15 +45,11 @@ var (
 					client.Close()
 					break
 				} else if status == 2 {
-					current, err := reader.ReadUInt64()
+					progress, err := reader.ReadFloat32()
 					if err != nil {
 						log.Fatalln(err)
 					}
-					total, err := reader.ReadUInt64()
-					if err != nil {
-						log.Fatalln(err)
-					}
-					fmt.Printf("\rProgress: %03d%% (%d / %d)", current*100/total, current, total)
+					fmt.Printf("\rProgress: %03d%%", int(100*progress))
 				}
 			}
 		},
