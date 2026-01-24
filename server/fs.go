@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"math"
 	"math/big"
 	"os"
 	"path"
@@ -328,11 +327,6 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 		return UploadResult{}, errors.New("File already exists in virtual file system")
 	}
 
-	// Actual upload progress
-	estimatedChunks := math.Ceil(float64(stat.Size()) / virtualfile.FileChunkSize)
-	log.Printf("Starting upload of %s\n", physicalPath)
-	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
-
 	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network)
 	if err != nil {
 		return UploadResult{}, err
@@ -360,7 +354,6 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 		}
 	}
 
-	log.Printf("Finished upload of %s\n", physicalPath)
 	return UploadResult{
 		Path:     path.Join("/", virtualPath),
 		Chunks:   file.Chunks(),
@@ -378,7 +371,6 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
 	}
 
-	log.Printf("Starting download of %s", virtualPath)
 	file, err := virtualfile.OpenVirtualFile(path.Join(fs.root, virtualPath), fs.network)
 	if err != nil {
 		return err
@@ -405,6 +397,5 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			go progressCallback(float32(event.Current)/float32(event.Total), false)
 		}
 	}
-	log.Printf("Finished download of %s\n", virtualPath)
 	return nil
 }

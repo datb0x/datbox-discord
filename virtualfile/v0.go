@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"os"
 	"strconv"
@@ -132,6 +133,10 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	if err != nil {
 		return
 	}
+	estimatedChunks := math.Ceil(float64(stat.Size()) / FileChunkSize)
+	log.Printf("Starting upload of %s\n", path)
+	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
+
 	octoBuf := make([]byte, 8)
 	big.NewInt(stat.Size()).FillBytes(octoBuf)
 	_, err = f.file.Write(octoBuf)
@@ -194,6 +199,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
+	log.Printf("Finished upload of %s\n", path)
 	err = nil
 }
 
@@ -275,6 +281,8 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 	if err != nil {
 		return
 	}
+
+	log.Printf("Starting download of %s", f.Path)
 
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
@@ -364,5 +372,6 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		err = errors.New("Downloaded file checksum doesn't match")
 		return
 	}
+	log.Printf("Finished download of %s\n", f.Path)
 	err = nil
 }
