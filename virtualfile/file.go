@@ -41,7 +41,7 @@ func CreateVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile
 	if _, err := os.Stat(path); err == nil {
 		return nil, errors.New("File already exists")
 	}
-	return NewV0File(path, network), nil
+	return NewV1File(path, network), nil
 }
 
 func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, error) {
@@ -51,6 +51,23 @@ func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, 
 	}
 	if (stat.Size() % 8) == 0 {
 		return NewV0File(path, network), nil
+	} else {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, 1)
+		read, err := file.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		if read != 1 {
+			return nil, errors.New("Did not read 1 byte")
+		}
+		switch buf[0] {
+		case 1:
+			return NewV1File(path, network), nil
+		}
 	}
 	return nil, errors.New("Unknown file version")
 }

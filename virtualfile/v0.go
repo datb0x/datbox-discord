@@ -20,7 +20,6 @@ type V0File struct {
 	writeMode bool
 	network   *network.DatboxNetwork
 	file      *os.File
-	version   int
 	chunks    int
 	size      uint64
 	octoBuf   []byte
@@ -55,6 +54,7 @@ func (f *V0File) Checksum() []byte {
 }
 
 func (f *V0File) OpenOrCreate() error {
+	f.octoBuf = make([]byte, 8)
 	stat, err := os.Stat(f.Path)
 	if err != nil {
 		// Not exist
@@ -77,7 +77,6 @@ func (f *V0File) OpenOrCreate() error {
 		}
 		f.chunks = int((stat.Size() - 32) / 8)
 		// Read header
-		f.octoBuf = make([]byte, 8)
 		read, err := file.Read(f.octoBuf)
 		if err != nil {
 			file.Close()
@@ -137,9 +136,8 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	log.Printf("Starting upload of %s\n", path)
 	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
 
-	octoBuf := make([]byte, 8)
-	big.NewInt(stat.Size()).FillBytes(octoBuf)
-	_, err = f.file.Write(octoBuf)
+	big.NewInt(stat.Size()).FillBytes(f.octoBuf)
+	_, err = f.file.Write(f.octoBuf)
 	if err != nil {
 		return
 	}
@@ -158,8 +156,8 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		estimatedChunks: int(stat.Size() / FileChunkSize),
 		network:         f.network,
 		writeFile: func(id uint64) {
-			big.NewInt(int64(id)).FillBytes(octoBuf)
-			f.file.Write(octoBuf)
+			big.NewInt(int64(id)).FillBytes(f.octoBuf)
+			f.file.Write(f.octoBuf)
 		},
 	}
 	gzipWriter := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
@@ -194,8 +192,8 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	fmt.Println()
 
 	// Write separator
-	big.NewInt(0).FillBytes(octoBuf)
-	f.file.Write(octoBuf)
+	big.NewInt(0).FillBytes(f.octoBuf)
+	f.file.Write(f.octoBuf)
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
@@ -233,6 +231,7 @@ func (f *V0File) Verify(checksum []byte) (bool, error) {
 		return false, errors.New("No file opened")
 	}
 	buf := make([]byte, len(checksum))
+	f.file.Seek(-16, io.SeekEnd)
 	read, err := f.file.Read(buf)
 	if read != 16 || err != nil && err != io.EOF {
 		return false, errors.New("Virtual file is corrupted")

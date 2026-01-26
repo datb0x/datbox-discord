@@ -88,7 +88,7 @@ func init() {
 	serverCmd.Flags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
 	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
 	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", configDir, "Directory where data should be stored")
-	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use .env or config instead")
+	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use config instead")
 }
 
 func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFileSystem) {
