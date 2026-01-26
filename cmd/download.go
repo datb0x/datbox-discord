@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"datbox/comm"
-	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -22,35 +21,14 @@ var (
 			writer.WriteInt32(id)
 			writer.WriteUtf8(args[0])
 			writer.WriteUtf8(args[1])
-			client.Write(MSG_TYPE_DOWNLOAD, writer.Data)
-			for {
-				message, err := client.Read()
-				if err != nil {
-					log.Fatalln(err)
-				}
-				if message.MsgType != int(id) {
-					continue
-				}
-				reader := comm.NewReader(message)
-				status, err := reader.ReadByte()
-				if err != nil {
-					log.Fatalln(err)
-				}
-				if status == 0 || status == 1 {
-					str, err := reader.ReadUtf8()
-					if err != nil {
-						log.Fatalln(err)
-					}
-					fmt.Println("\n" + str)
-					client.Close()
-					break
-				} else if status == 2 {
-					progress, err := reader.ReadFloat32()
-					if err != nil {
-						log.Fatalln(err)
-					}
-					fmt.Printf("\rProgress: %03d%%", int(100*progress))
-				}
+			err = client.Write(MSG_TYPE_DOWNLOAD, writer.Data)
+			if err != nil {
+				log.Println("Failed to write data to ipc")
+				log.Fatalln(err)
+			}
+			err = comm.ReadUntilEnd(client, id)
+			if err != nil {
+				log.Fatalln(err)
 			}
 		},
 	}

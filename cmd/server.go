@@ -4,7 +4,6 @@ import (
 	"datbox/comm"
 	"datbox/network"
 	"datbox/server"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"path"
@@ -105,45 +104,24 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 	if err != nil {
 		return
 	}
-	writer := comm.NewWriter()
+	logger := createLogger(server, int(id))
 	switch message.MsgType {
 	case MSG_TYPE_UPLOAD:
 		{
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
-			sending := false
-			result, err := fs.Upload(physicalPath, virtualPath, func(progress float32, must bool) {
-				if sending && !must {
-					return
-				}
-				sending = true
-				writer.Clear()
-				writer.WriteByte(2)
-				writer.WriteFloat32(progress)
-				server.Write(int(id), writer.Data)
-				sending = false
-			})
-			writer.Clear()
-			if err == nil {
-				writer.WriteByte(0)
-				writer.WriteUtf8(fmt.Sprintf("Uploaded to %s as %d chunks (MD5 %s)", result.Path, result.Chunks, hex.EncodeToString(result.Checksum)))
-				server.Write(int(id), writer.Data)
-			} else {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+			// Logger automatically succeeds if no error
+			err = fs.Upload(physicalPath, virtualPath, logger)
+			if err != nil {
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			}
 			break
 		}
@@ -151,39 +129,18 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
-			sending := false
-			err = fs.Download(virtualPath, physicalPath, func(progress float32, must bool) {
-				if sending && !must {
-					return
-				}
-				sending = true
-				writer.Clear()
-				writer.WriteByte(2)
-				writer.WriteFloat32(progress)
-				server.Write(int(id), writer.Data)
-				sending = false
-			})
-			writer.Clear()
-			if err == nil {
-				writer.WriteByte(0)
-				writer.WriteUtf8(fmt.Sprintf("Downloaded to %s successfully", physicalPath))
-				server.Write(int(id), writer.Data)
-			} else {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+			// Logger automatically succeeds if no error
+			err = fs.Download(virtualPath, physicalPath, logger)
+			if err != nil {
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			}
 			break
 		}
@@ -191,16 +148,12 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			long, err := reader.ReadByte()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			human, err := reader.ReadByte()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
@@ -209,9 +162,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			entries, err := fs.ReadDir(virtualPath, long == 1)
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			var body strings.Builder
@@ -256,51 +207,40 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			} else {
 				for _, entry := range entries {
 					if entry.Stat.IsDir() {
-						body.WriteString(" " + entry.Name + "/\t")
+						body.WriteString(entry.Name + "/\t")
 					} else {
-						body.WriteString(" " + entry.Name + "\t")
+						body.WriteString(entry.Name + "\t")
 					}
 				}
 			}
-			writer.Clear()
-			writer.WriteByte(0)
-			writer.WriteUtf8(body.String())
-			server.Write(int(id), writer.Data)
+			logger <- append([]byte{0}, []byte(body.String())...)
 			break
 		}
 	case MSG_TYPE_MOVE:
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			err = fs.Move(src, dest)
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			} else {
-				writer.WriteByte(0)
+				logger <- []byte{0}
 			}
-			server.Write(int(id), writer.Data)
 			break
 		}
 	case MSG_TYPE_REMOVE:
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -313,21 +253,17 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Remove(virtualPath, recursive == 1, remote == 1)
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			} else {
-				writer.WriteByte(0)
+				logger <- []byte{0}
 			}
-			server.Write(int(id), writer.Data)
 			break
 		}
 	case MSG_TYPE_MKDIR:
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -336,39 +272,52 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Mkdir(virtualPath, recursive == 1)
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			} else {
-				writer.WriteByte(0)
+				logger <- []byte{0}
 			}
-			server.Write(int(id), writer.Data)
 			break
 		}
 	case MSG_TYPE_COPY:
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
-				server.Write(int(id), writer.Data)
+				logger <- append([]byte{1}, []byte(err.Error())...)
 				return
 			}
 			err = fs.Copy(src, dest)
 			if err != nil {
-				writer.WriteByte(1)
-				writer.WriteUtf8(fmt.Sprint(err))
+				logger <- append([]byte{1}, []byte(err.Error())...)
 			} else {
-				writer.WriteByte(0)
+				logger <- []byte{0}
 			}
-			server.Write(int(id), writer.Data)
 			break
 		}
 	}
+}
+
+func createLogger(server *ipc.Server, id int) chan []byte {
+	logger := make(chan []byte)
+	go func() {
+		sending := false
+		for {
+			message := <-logger
+			if message[0] == 0 || message[0] == 1 {
+				server.Write(id, message)
+			} else {
+				if sending && message[0] != 2 {
+					continue
+				}
+				sending = true
+				server.Write(id, message)
+				sending = false
+			}
+		}
+	}()
+	return logger
 }

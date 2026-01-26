@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"datbox/comm"
-	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -31,18 +30,9 @@ var (
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			reader, status, err := comm.WaitForMessage(client, id)
+			err = comm.ReadUntilEnd(client, id)
 			if err != nil {
-				log.Println("Failed to read data from ipc")
 				log.Fatalln(err)
-			}
-			if status == 0 || status == 1 {
-				str, err := reader.ReadUtf8()
-				if err != nil {
-					log.Fatalln(err)
-				}
-				fmt.Println(str)
-				client.Close()
 			}
 		},
 	}

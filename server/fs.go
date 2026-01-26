@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -142,15 +143,42 @@ func (fs *DatboxFileSystem) Stat(virtualPath string, local ...bool) (os.FileInfo
 			return nil, err
 		}
 		defer file.Close()
-		data := make([]byte, 8)
-		read, err := file.Read(data)
-		if err != nil {
-			return nil, err
+		var size int64
+		if stat.Size()%8 == 0 {
+			// Version 0
+			data := make([]byte, 8)
+			read, err := file.Read(data)
+			if err != nil {
+				return nil, err
+			}
+			if read != 8 {
+				return nil, errors.New("Did not read 8 bytes")
+			}
+			size = big.NewInt(0).SetBytes(data).Int64()
+		} else {
+			// Version 1+
+			data := make([]byte, 5)
+			read, err := file.Read(data)
+			if err != nil {
+				return nil, err
+			}
+			if read != 5 {
+				return nil, errors.New("Did not read 5 bytes")
+			}
+			if string(data[1:]) != "DtBx" {
+				return nil, errors.New("Wrong file signature")
+			}
+			file.Seek(37, io.SeekStart)
+			data = make([]byte, 8)
+			read, err = file.Read(data)
+			if err != nil {
+				return nil, err
+			}
+			if read != 8 {
+				return nil, errors.New("Did not read 8 bytes")
+			}
+			size = big.NewInt(0).SetBytes(data).Int64()
 		}
-		if read != 8 {
-			return nil, errors.New("Did not read 8 bytes")
-		}
-		size := big.NewInt(0).SetBytes(data).Int64()
 		newStat := FileInfo{stat: stat, size: size}
 		return newStat, nil
 	}
@@ -308,35 +336,35 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	return fs.saveReference()
 }
 
-func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCallback func(progress float32, must bool)) (UploadResult, error) {
+func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, logger chan []byte) error {
 	virtualPath = fs.sanitize(virtualPath)
 	stat, err := os.Stat(physicalPath)
 	if err != nil {
-		return UploadResult{}, errors.New("Source file doesn't exist")
+		return errors.New("Source file doesn't exist")
 	}
 	if stat.IsDir() {
-		return UploadResult{}, errors.New("Only file uploads are currently supported")
+		return errors.New("Only file uploads are currently supported")
 	}
 
 	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
 	os.MkdirAll(virtualDir, 0644)
 	if _, err = os.Stat(virtualDir); err != nil {
-		return UploadResult{}, errors.New("Failed to create directory")
+		return errors.New("Failed to create directory")
 	}
 	if _, err = os.Stat(path.Join(fs.root, virtualPath)); err == nil {
-		return UploadResult{}, errors.New("File already exists in virtual file system")
+		return errors.New("File already exists in virtual file system")
 	}
 
 	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network)
 	if err != nil {
-		return UploadResult{}, err
+		return err
 	}
 	err = file.OpenOrCreate()
 	if err != nil {
-		return UploadResult{}, err
+		return err
 	}
 	if !file.WriteMode() {
-		return UploadResult{}, errors.New("File should be in write mode")
+		return errors.New("File should be in write mode")
 	}
 
 	eventSignal := make(chan virtualfile.TransferEvent)
@@ -345,23 +373,24 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, progressCal
 		event := <-eventSignal
 		if event.Done {
 			if event.Err != nil {
-				return UploadResult{}, event.Err
+				return event.Err
 			}
-			progressCallback(1, true)
+			str := fmt.Sprintf("\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
+			logger <- append([]byte{2}, []byte(str)...)
 			break
 		} else {
-			go progressCallback(float32(event.Current)/float32(event.Total), false)
+			str := fmt.Sprintf("\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
+			logger <- append([]byte{3}, []byte(str)...)
 		}
 	}
 
-	return UploadResult{
-		Path:     path.Join("/", virtualPath),
-		Chunks:   file.Chunks(),
-		Checksum: file.Checksum(),
-	}, nil
+	str := fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
+	logger <- append([]byte{0}, []byte(str)...)
+
+	return nil
 }
 
-func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressCallback func(progress float32, must bool)) error {
+func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger chan []byte) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if _, err := os.Stat(physicalPath); err == nil {
 		return errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
@@ -391,11 +420,17 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, progressC
 			if event.Err != nil {
 				return event.Err
 			}
-			progressCallback(1, true)
+			str := fmt.Sprintf("\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
+			logger <- append([]byte{2}, []byte(str)...)
 			break
 		} else {
-			go progressCallback(float32(event.Current)/float32(event.Total), false)
+			str := fmt.Sprintf("\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
+			logger <- append([]byte{3}, []byte(str)...)
 		}
 	}
+
+	str := fmt.Sprintf("\nDownloaded to %s successfully", physicalPath)
+	logger <- append([]byte{0}, []byte(str)...)
+
 	return nil
 }

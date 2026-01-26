@@ -128,6 +128,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	if err != nil {
 		return
 	}
+	f.size = uint64(stat.Size())
 	buf := make([]byte, FileChunkSize)
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
 	log.Printf("Starting upload of %s\n", path)

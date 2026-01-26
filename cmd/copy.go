@@ -28,16 +28,9 @@ var (
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			_, status, err := comm.WaitForMessage(client, id)
+			err = comm.ReadUntilEnd(client, id)
 			if err != nil {
-				log.Println("Failed to read data from ipc")
 				log.Fatalln(err)
-			}
-			if status == 0 || status == 1 {
-				if err != nil {
-					log.Fatalln(err)
-				}
-				client.Close()
 			}
 		},
 	}
