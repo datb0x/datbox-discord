@@ -306,15 +306,21 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 			if refs >= 1 {
 				log.Println("Cannot delete remote. Another file referencing the same chunks exist")
 			} else {
-				file, err := os.Open(path.Join(fs.root, virtualPath))
+				file, err := virtualfile.OpenVirtualFile(path.Join(fs.root, virtualPath), fs.network)
+				if err != nil {
+					return err
+				}
+				err = file.OpenOrCreate()
 				if err != nil {
 					return err
 				}
 				defer file.Close()
 				ids := []string{}
-				data := make([]byte, 8)
-				for read, err := file.Read(data); err != nil && read == 8; {
-					id := big.NewInt(0).SetBytes(data).Uint64()
+				for {
+					id, err := file.ReadMsgID()
+					if err != nil {
+						return err
+					}
 					if id == 0 {
 						break
 					}
