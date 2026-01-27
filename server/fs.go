@@ -336,7 +336,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	return fs.saveReference()
 }
 
-func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, logger chan []byte) error {
+func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion byte, logger chan []byte) error {
 	virtualPath = fs.sanitize(virtualPath)
 	stat, err := os.Stat(physicalPath)
 	if err != nil {
@@ -355,7 +355,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, logger chan
 		return errors.New("File already exists in virtual file system")
 	}
 
-	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network)
+	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network, fileVersion)
 	if err != nil {
 		return err
 	}

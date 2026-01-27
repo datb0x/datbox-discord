@@ -108,6 +108,11 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 	switch message.MsgType {
 	case MSG_TYPE_UPLOAD:
 		{
+			fileVersion, err := reader.ReadByte()
+			if err != nil {
+				logger <- append([]byte{1}, []byte(err.Error())...)
+				return
+			}
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
 				logger <- append([]byte{1}, []byte(err.Error())...)
@@ -119,7 +124,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				return
 			}
 			// Logger automatically succeeds if no error
-			err = fs.Upload(physicalPath, virtualPath, logger)
+			err = fs.Upload(physicalPath, virtualPath, fileVersion, logger)
 			if err != nil {
 				logger <- append([]byte{1}, []byte(err.Error())...)
 			}
@@ -308,14 +313,19 @@ func createLogger(server *ipc.Server, id int) chan []byte {
 		for {
 			message := <-logger
 			if message[0] == 0 || message[0] == 1 {
+				for sending {
+					time.Sleep(100 * time.Millisecond)
+				}
 				server.Write(id, message)
 			} else {
 				if sending && message[0] != 2 {
 					continue
 				}
 				sending = true
-				server.Write(id, message)
-				sending = false
+				go func() {
+					server.Write(id, message)
+					sending = false
+				}()
 			}
 		}
 	}()

@@ -133,7 +133,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		return
 	}
 	f.size = uint64(stat.Size())
-	estimatedChunks := math.Ceil(float64(stat.Size()) / FileChunkSize)
+	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
 	log.Printf("Starting upload of %s\n", path)
 	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
 
@@ -150,18 +150,65 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		return
 	}
 	defer input.Close()
-	uploader := Uploader{
-		buffer:          make([]byte, FileChunkSize),
-		bufferLength:    0,
-		chunks:          0,
-		estimatedChunks: int(stat.Size() / FileChunkSize),
-		network:         f.network,
-		writeFile: func(id uint64) {
-			big.NewInt(int64(id)).FillBytes(f.octoBuf)
+	pipeReader, pipeWriter := io.Pipe()
+	readerSignal := make(chan error)
+	go func() {
+		bufReader := bufio.NewReaderSize(pipeReader, FileChunkSize)
+		readerBuf := make([]byte, 4096)
+		chunkBuf := make([]byte, FileChunkSize)
+		bufLength := 0
+
+		upload := func() error {
+			id, err := f.network.SendAttachment(chunkBuf[:bufLength])
+			if err != nil {
+				return err
+			}
+			parsed, err := strconv.ParseUint(id, 10, 64)
+			if err != nil {
+				return err
+			}
+			big.NewInt(int64(parsed)).FillBytes(f.octoBuf)
 			f.file.Write(f.octoBuf)
-		},
-	}
-	gzipWriter := gzip.NewWriter(io.MultiWriter(&uploader, hasher))
+			f.chunks++
+			fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
+			bufLength = 0
+			return nil
+		}
+
+		for {
+			read, err := bufReader.Read(readerBuf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				readerSignal <- err
+				return
+			}
+			if read == 0 {
+				break
+			}
+
+			start := 0
+			canRead := min(len(chunkBuf)-bufLength, read-start)
+			for read-start >= canRead && canRead != 0 {
+				copy(chunkBuf[bufLength:bufLength+canRead], readerBuf[start:start+canRead])
+				bufLength += canRead
+				start += canRead
+				// Buffer is full. Send to Discord
+				if bufLength >= len(chunkBuf) {
+					err := upload()
+					if err != nil {
+						readerSignal <- err
+						return
+					}
+				}
+				canRead = min(len(chunkBuf)-bufLength, read-start)
+			}
+		}
+		readerSignal <- upload()
+	}()
+
+	gzipWriter := gzip.NewWriter(io.MultiWriter(pipeWriter, hasher))
 	totalBytes := int64(0)
 	for {
 		read, err := input.Read(buf)
@@ -170,6 +217,13 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		}
 		if read == 0 {
 			break
+		}
+		select {
+		case err, ok := <-readerSignal:
+			if err != nil && ok {
+				return
+			}
+		default:
 		}
 		_, err = gzipWriter.Write(buf[:read])
 		if err != nil {
@@ -182,11 +236,12 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		}
 	}
 	gzipWriter.Close()
+	pipeWriter.Close()
 	channel <- TransferEvent{
 		Current: totalBytes,
 		Total:   stat.Size(),
 	}
-	err = uploader.Upload()
+	err = <-readerSignal
 	if err != nil {
 		return
 	}

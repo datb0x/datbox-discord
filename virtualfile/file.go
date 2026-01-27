@@ -3,6 +3,8 @@ package virtualfile
 import (
 	"datbox/network"
 	"errors"
+	"fmt"
+	"log"
 	"os"
 )
 
@@ -37,11 +39,19 @@ type VirtualFile interface {
 	DownloadTo(path string, channel chan TransferEvent)
 }
 
-func CreateVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, error) {
+func CreateVirtualFile(path string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
 	if _, err := os.Stat(path); err == nil {
 		return nil, errors.New("File already exists")
 	}
-	return NewV1File(path, network), nil
+	log.Printf("Creating virtual file with version %d", fileVersion)
+	switch fileVersion {
+	case 0:
+		return NewV0File(path, network), nil
+	case 1:
+		return NewV1File(path, network), nil
+	default:
+		return nil, errors.New("Unknown file version " + fmt.Sprint(fileVersion))
+	}
 }
 
 func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, error) {
@@ -50,6 +60,7 @@ func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, 
 		return nil, err
 	}
 	if (stat.Size() % 8) == 0 {
+		log.Printf("Opening virtual file with version 0")
 		return NewV0File(path, network), nil
 	} else {
 		file, err := os.Open(path)
@@ -64,6 +75,7 @@ func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, 
 		if read != 1 {
 			return nil, errors.New("Did not read 1 byte")
 		}
+		log.Printf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
 		case 1:
 			return NewV1File(path, network), nil

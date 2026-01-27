@@ -8,7 +8,8 @@ import (
 )
 
 var (
-	uploadCmd = &cobra.Command{
+	uploadFileVersion byte
+	uploadCmd         = &cobra.Command{
 		Use:   "upload <physical-path> <virtual-path>",
 		Short: "Upload a file to the virtual file system",
 		Args:  cobra.MinimumNArgs(2),
@@ -19,6 +20,7 @@ var (
 			}
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
+			writer.WriteByte(uploadFileVersion)
 			writer.WriteUtf8(args[0])
 			writer.WriteUtf8(args[1])
 			err = client.Write(MSG_TYPE_UPLOAD, writer.Data)
@@ -33,3 +35,7 @@ var (
 		},
 	}
 )
+
+func init() {
+	uploadCmd.Flags().Uint8VarP(&uploadFileVersion, "file-version", "v", 1, "Use a specific file version for uploading")
+}
