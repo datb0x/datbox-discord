@@ -85,14 +85,10 @@ func (f *V0File) OpenOrCreate() error {
 		}
 		f.chunks = int((stat.Size() - 32) / 8)
 		// Read header
-		read, err := file.Read(f.octoBuf)
+		_, err = io.ReadFull(file, f.octoBuf)
 		if err != nil {
 			file.Close()
 			return err
-		}
-		if read != 8 {
-			file.Close()
-			return errors.New("Did not read 8 bytes")
 		}
 		f.size = big.NewInt(0).SetBytes(f.octoBuf).Uint64()
 	}
@@ -194,15 +190,13 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	readerSignal := make(chan error)
 	go func() {
 		bufReader := bufio.NewReaderSize(pipeReader, FileChunkSize)
-		readerBuf := make([]byte, 4096)
 		chunkBuf := make([]byte, FileChunkSize)
-		bufLength := 0
 		index := 0
 
-		upload := func() error {
+		upload := func(length int) error {
 			header.Fields["index"] = fmt.Sprint(index)
 			index++
-			id, err := f.network.SendAttachment(chunkBuf[:bufLength], header)
+			id, err := f.network.SendAttachment(chunkBuf[:length], header)
 			if err != nil {
 				return err
 			}
@@ -214,12 +208,11 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 			f.file.Write(f.octoBuf)
 			f.chunks++
 			fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
-			bufLength = 0
 			return nil
 		}
 
 		for {
-			read, err := bufReader.Read(readerBuf)
+			read, err := ReadFill(bufReader, chunkBuf)
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -231,24 +224,12 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 				break
 			}
 
-			start := 0
-			canRead := min(len(chunkBuf)-bufLength, read-start)
-			for read-start >= canRead && canRead != 0 {
-				copy(chunkBuf[bufLength:bufLength+canRead], readerBuf[start:start+canRead])
-				bufLength += canRead
-				start += canRead
-				// Buffer is full. Send to Discord
-				if bufLength >= len(chunkBuf) {
-					err := upload()
-					if err != nil {
-						readerSignal <- err
-						return
-					}
-				}
-				canRead = min(len(chunkBuf)-bufLength, read-start)
+			err = upload(read)
+			if err != nil {
+				readerSignal <- err
+				return
 			}
 		}
-		readerSignal <- upload()
 	}()
 
 	gzipWriter := gzip.NewWriter(io.MultiWriter(pipeWriter, hasher))
@@ -310,12 +291,9 @@ func (f *V0File) ReadMsgID() (uint64, error) {
 	if f.file == nil {
 		return 0, errors.New("No file opened")
 	}
-	read, err := f.file.Read(f.octoBuf)
+	_, err := io.ReadFull(f.file, f.octoBuf)
 	if err != nil {
 		return 0, err
-	}
-	if read != 8 {
-		return 0, errors.New("Did not read 8 bytes")
 	}
 	return big.NewInt(0).SetBytes(f.octoBuf).Uint64(), nil
 }

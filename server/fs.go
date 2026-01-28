@@ -189,33 +189,24 @@ func (dbfs *DatboxFileSystem) mergeFileSystem(remoteFs []byte) error {
 			return err
 		}
 		if read != 8 {
-			return errors.New("Did not read 8 bytes")
+			return io.ErrUnexpectedEOF
 		}
 		length := big.NewInt(0).SetBytes(octoBuf).Uint64()
 		buf := make([]byte, length)
-		read, err = reader.Read(buf)
+		_, err = io.ReadFull(reader, buf)
 		if err != nil {
 			return err
-		}
-		if read != int(length) {
-			return fmt.Errorf("Did not read %d bytes", length)
 		}
 		path := string(buf)
-		read, err = reader.Read(octoBuf)
+		_, err = io.ReadFull(reader, octoBuf)
 		if err != nil {
 			return err
-		}
-		if read != 8 {
-			return errors.New("Did not read 8 bytes")
 		}
 		length = big.NewInt(0).SetBytes(octoBuf).Uint64()
 		buf = make([]byte, length)
-		read, err = reader.Read(buf)
+		_, err = io.ReadFull(reader, buf)
 		if err != nil {
 			return err
-		}
-		if read != int(length) {
-			return fmt.Errorf("Did not read %d bytes", length)
 		}
 		if dbfs.exists(path) {
 			localData, err := os.ReadFile(filepath.Join(dbfs.root, path))
@@ -258,7 +249,7 @@ func (fs *DatboxFileSystem) sendFileSystem(packed []byte, hash string) (string, 
 	index := 0
 	var id string
 	for {
-		read, err := reader.Read(buf)
+		read, err := virtualfile.ReadFill(reader, buf)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -520,35 +511,26 @@ func (fs *DatboxFileSystem) Stat(virtualPath string, local ...bool) (os.FileInfo
 		if stat.Size()%8 == 0 {
 			// Version 0
 			data := make([]byte, 8)
-			read, err := file.Read(data)
+			_, err := io.ReadFull(file, data)
 			if err != nil {
 				return nil, err
-			}
-			if read != 8 {
-				return nil, errors.New("Did not read 8 bytes")
 			}
 			size = big.NewInt(0).SetBytes(data).Int64()
 		} else {
 			// Version 1+
 			data := make([]byte, 5)
-			read, err := file.Read(data)
+			_, err := io.ReadFull(file, data)
 			if err != nil {
 				return nil, err
-			}
-			if read != 5 {
-				return nil, errors.New("Did not read 5 bytes")
 			}
 			if string(data[1:]) != "DtBx" {
 				return nil, errors.New("Wrong file signature")
 			}
 			file.Seek(37, io.SeekStart)
 			data = make([]byte, 8)
-			read, err = file.Read(data)
+			_, err = io.ReadFull(file, data)
 			if err != nil {
 				return nil, err
-			}
-			if read != 8 {
-				return nil, errors.New("Did not read 8 bytes")
 			}
 			size = big.NewInt(0).SetBytes(data).Int64()
 		}

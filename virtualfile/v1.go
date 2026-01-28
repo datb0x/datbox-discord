@@ -71,12 +71,9 @@ func (f *V1File) OpenOrCreate() error {
 		}
 		// Read header
 		buf := make([]byte, 5)
-		read, err := file.Read(buf)
+		_, err = io.ReadFull(file, buf)
 		if err != nil {
 			return err
-		}
-		if read != 5 {
-			return errors.New("Did not read 5 bytes")
 		}
 		// Version number
 		if buf[0] != 1 {
@@ -87,22 +84,15 @@ func (f *V1File) OpenOrCreate() error {
 			return errors.New("Wrong file signature")
 		}
 		// File encryption key
-		read, err = file.Read(f.password)
+		_, err = io.ReadFull(file, f.password)
 		if err != nil {
 			return err
-		}
-		if read != 32 {
-			return errors.New("Did not read 32 bytes")
 		}
 		// File size
-		read, err = file.Read(f.octoBuf)
+		_, err = io.ReadFull(file, f.octoBuf)
 		if err != nil {
 			file.Close()
 			return err
-		}
-		if read != 8 {
-			file.Close()
-			return errors.New("Did not read 8 bytes")
 		}
 		f.size = big.NewInt(0).SetBytes(f.octoBuf).Uint64()
 		f.chunks = int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
@@ -183,8 +173,11 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	totalBytes := int64(0)
 	index := 0
 	for {
-		read, err := input.Read(buf)
-		if err != nil && err != io.EOF {
+		read, err := ReadFill(input, buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
 			return
 		}
 		if read == 0 {

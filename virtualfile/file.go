@@ -4,6 +4,7 @@ import (
 	"datbox/network"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -72,12 +73,9 @@ func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNe
 			return nil, err
 		}
 		buf := make([]byte, 1)
-		read, err := file.Read(buf)
+		_, err = io.ReadFull(file, buf)
 		if err != nil {
 			return nil, err
-		}
-		if read != 1 {
-			return nil, errors.New("Did not read 1 byte")
 		}
 		log.Printf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
@@ -86,4 +84,17 @@ func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNe
 		}
 	}
 	return nil, errors.New("Unknown file version")
+}
+
+func ReadFill(r io.Reader, buf []byte) (n int, err error) {
+	for n < len(buf) {
+		read, er := r.Read(buf[n:])
+		n += read
+
+		if er != nil {
+			err = er
+			return
+		}
+	}
+	return
 }
