@@ -3,6 +3,7 @@ package network
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -51,8 +52,13 @@ func (h *DatboxHeader) String() string {
 		builder.WriteString(h.Action)
 	}
 	builder.WriteString("\n")
-	for key, val := range h.Fields {
-		builder.WriteString(fmt.Sprintf("%s: %s", key, val))
+	keys := make([]string, 0, len(h.Fields))
+	for key := range h.Fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Fprintf(&builder, "%s: %s", key, h.Fields[key])
 		builder.WriteString("\n")
 	}
 	return strings.TrimRight(builder.String(), "\n")
