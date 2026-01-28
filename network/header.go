@@ -12,6 +12,7 @@ var (
 	ActionFileChunk       = "file-chunk"
 	ActionBegin           = "begin"
 	ActionComplete        = "complete"
+	ActionRemove          = "remove"
 )
 
 type DatboxHeader struct {

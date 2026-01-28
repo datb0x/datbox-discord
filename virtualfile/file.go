@@ -28,6 +28,8 @@ type VirtualFile interface {
 	OpenOrCreate() error
 	Close() error
 
+	Write(data []byte) error
+	WriteHeader() error
 	WriteMsgID(id uint64) error
 	UploadFrom(path string, channel chan TransferEvent)
 
@@ -40,29 +42,30 @@ type VirtualFile interface {
 	DownloadTo(path string, channel chan TransferEvent)
 }
 
-func CreateVirtualFile(root, path, fsHash string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
+func CreateVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
 	if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 		return nil, errors.New("File already exists")
 	}
+	os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755)
 	log.Printf("Creating virtual file with version %d", fileVersion)
 	switch fileVersion {
 	case 0:
-		return NewV0File(root, path, fsHash, network), nil
+		return NewV0File(root, path, fsMsg, fsHash, network), nil
 	case 1:
-		return NewV1File(root, path, fsHash, network), nil
+		return NewV1File(root, path, fsMsg, fsHash, network), nil
 	default:
 		return nil, errors.New("Unknown file version " + fmt.Sprint(fileVersion))
 	}
 }
 
-func OpenVirtualFile(root, path, fsHash string, network *network.DatboxNetwork) (VirtualFile, error) {
+func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) (VirtualFile, error) {
 	stat, err := os.Stat(filepath.Join(root, path))
 	if err != nil {
 		return nil, err
 	}
 	if (stat.Size() % 8) == 0 {
 		log.Printf("Opening virtual file with version 0")
-		return NewV0File(root, path, fsHash, network), nil
+		return NewV0File(root, path, fsMsg, fsHash, network), nil
 	} else {
 		file, err := os.Open(filepath.Join(root, path))
 		if err != nil {
@@ -79,7 +82,7 @@ func OpenVirtualFile(root, path, fsHash string, network *network.DatboxNetwork) 
 		log.Printf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
 		case 1:
-			return NewV1File(root, path, fsHash, network), nil
+			return NewV1File(root, path, fsMsg, fsHash, network), nil
 		}
 	}
 	return nil, errors.New("Unknown file version")

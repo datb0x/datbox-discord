@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"crypto/md5"
 	"datbox/network"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 type V0File struct {
 	Path           string
 	RelPath        string
+	FileSystemMsg  string
 	FileSystemHash string
 	writeMode      bool
 	network        *network.DatboxNetwork
@@ -29,10 +31,11 @@ type V0File struct {
 	checksum       []byte
 }
 
-func NewV0File(root, path, fsHash string, network *network.DatboxNetwork) *V0File {
+func NewV0File(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) *V0File {
 	file := new(V0File)
 	file.Path = filepath.Join(root, path)
 	file.RelPath = path
+	file.FileSystemMsg = fsMsg
 	file.FileSystemHash = fsHash
 	file.network = network
 	return file
@@ -103,6 +106,27 @@ func (f *V0File) Close() error {
 	return errors.New("No file opened")
 }
 
+func (f *V0File) Write(data []byte) error {
+	written, err := f.file.Write(data)
+	if err != nil {
+		return err
+	}
+	if written != len(data) {
+		return fmt.Errorf("Did not write %d bytes", len(data))
+	}
+	return nil
+}
+
+func (f *V0File) WriteHeader() error {
+	// Write file size
+	big.NewInt(int64(f.size)).FillBytes(f.octoBuf)
+	_, err := f.file.Write(f.octoBuf)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func (f *V0File) WriteMsgID(id uint64) error {
 	if f.file == nil {
 		return errors.New("No file opened")
@@ -132,10 +156,20 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		return
 	}
 
+	buf := make([]byte, 4096)
+	stat, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	f.size = uint64(stat.Size())
+
 	// Begin header
 	header := network.NewHeader(network.ActionBegin)
+	header.Fields["fs-msg"] = f.FileSystemMsg
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
+	header.Fields["version"] = "0"
+	header.Fields["size"] = fmt.Sprint(f.size)
 	err = f.network.SendMessage(header)
 	if err != nil {
 		return
@@ -144,22 +178,10 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	// Chunk header
 	header.Action = network.ActionFileChunk
 
-	buf := make([]byte, 4096)
-	// Write file size
-	stat, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	f.size = uint64(stat.Size())
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
 	log.Printf("Starting upload of %s\n", path)
 	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
 
-	big.NewInt(stat.Size()).FillBytes(f.octoBuf)
-	_, err = f.file.Write(f.octoBuf)
-	if err != nil {
-		return
-	}
 	// Piggyback file checksum
 	hasher := md5.New()
 
@@ -280,6 +302,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	header = network.NewHeader(network.ActionComplete)
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
+	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
 	err = f.network.SendMessage(header)
 }
 
