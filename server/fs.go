@@ -417,7 +417,20 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 				}
 				switch header.Action {
 				case network.ActionBegin:
-					file, err := virtualfile.CreateVirtualFile(fs.root, header.Fields["path"], fs.lastFsMsgID, fs.lastFsHash, fs.network, 1)
+					if fs.exists(header.Fields["path"]) {
+						log.Printf("%s already exists locally. Overwrite with remote version? [y/n]", header.Fields["path"])
+						var ans string
+						fmt.Scanf("%s", &ans)
+						if strings.ToLower(ans) != "y" {
+							continue
+						}
+						fs.Remove(header.Fields["path"])
+					}
+					version, err := strconv.ParseInt(header.Fields["version"], 10, 8)
+					if err != nil {
+						version = 1
+					}
+					file, err := virtualfile.CreateVirtualFile(fs.root, header.Fields["path"], fs.lastFsMsgID, fs.lastFsHash, fs.network, byte(version))
 					if err != nil {
 						return err
 					}
@@ -473,10 +486,11 @@ Sync:
 	if hash == fs.lastFsHash {
 		return nil
 	}
-	fs.lastFsMsgID, err = fs.sendFileSystem(packed, hash)
+	id, err := fs.sendFileSystem(packed, hash)
 	if err != nil {
 		return err
 	}
+	fs.lastFsMsgID = id
 	fs.lastFsHash = hash
 	return nil
 }
@@ -754,6 +768,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		event := <-eventSignal
 		if event.Done {
 			if event.Err != nil {
+				fs.Remove(virtualPath)
 				return event.Err
 			}
 			str := fmt.Sprintf("\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
@@ -767,6 +782,21 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 
 	str := fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
 	logger <- append([]byte{0}, []byte(str)...)
+
+	go func() {
+		packed, hash, err := fs.packFileSystem(false)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		id, err := fs.sendFileSystem(packed, hash)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		fs.lastFsMsgID = id
+		fs.lastFsHash = hash
+	}()
 
 	return nil
 }
