@@ -32,6 +32,7 @@ type DatboxFileSystem struct {
 	root          string
 	network       *network.DatboxNetwork
 	fileReference map[string]int
+	initialized   bool
 	lastFsHash    string
 	lastFsMsgID   string
 }
@@ -65,6 +66,7 @@ func NewFileSystem(dataDir string, maxJobs int, network *network.DatboxNetwork) 
 	fs.root = path.Join(dataDir, "root")
 	fs.network = network
 	fs.fileReference = map[string]int{}
+	fs.initialized = false
 
 	os.MkdirAll(fs.root, 0755)
 
@@ -89,6 +91,7 @@ func NewFileSystem(dataDir string, maxJobs int, network *network.DatboxNetwork) 
 		return nil, err
 	}
 
+	fs.initialized = true
 	return fs, nil
 }
 
@@ -352,27 +355,37 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 		return err
 	}
 	io.Copy(&remoteFsData, res.Body)
-	for chunks > 0 {
-		messages, err := fs.network.FetchMessagesSince(fsMessage.ID, int(chunks))
-		if err != nil {
-			return err
-		}
-		if len(messages) == 0 {
-			return errors.New("No more messages found, but chunks are still incomplete")
-		}
-		for _, message := range messages {
-			header, err := network.ParseHeader(message.Content)
+	{
+		seenIDs := map[string]bool{}
+		seenIDs[lastMessageID] = true
+		for chunks > 0 {
+			messages, err := fs.network.FetchMessagesSince(fsMessage.ID, int(chunks))
 			if err != nil {
-				continue
+				return err
 			}
-			if header.Action == network.ActionFileSystemChunk && header.Fields["hash"] == fs.lastFsHash {
-				res, err = http.Get(message.Attachments[0].URL)
-				if err != nil {
-					return err
+			validMessages := len(messages)
+			for _, message := range messages {
+				if seenIDs[message.ID] {
+					validMessages--
+					continue
 				}
-				io.Copy(&remoteFsData, res.Body)
-				chunks--
-				lastMessageID = message.ID
+				seenIDs[message.ID] = true
+				header, err := network.ParseHeader(message.Content)
+				if err != nil {
+					continue
+				}
+				if header.Action == network.ActionFileSystemChunk && header.Fields["hash"] == fs.lastFsHash {
+					res, err = http.Get(message.Attachments[0].URL)
+					if err != nil {
+						return err
+					}
+					io.Copy(&remoteFsData, res.Body)
+					chunks--
+					lastMessageID = message.ID
+				}
+			}
+			if validMessages == 0 {
+				return errors.New("No more messages found, but chunks are still incomplete")
 			}
 		}
 	}
@@ -397,6 +410,7 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 					validMessages--
 					continue
 				}
+				seenIDs[message.ID] = true
 				header, err := network.ParseHeader(message.Content)
 				if err != nil || header.Action == network.ActionFileSystem || header.Action == network.ActionFileSystemChunk || header.Fields["fs-hash"] != fs.lastFsHash {
 					continue
@@ -452,16 +466,13 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 	}
 	log.Println("Processed all logs")
 Sync:
-	log.Println("Packing FS")
 	packed, hash, err := fs.packFileSystem(false)
 	if err != nil {
 		return err
 	}
-	log.Println(hash, fs.lastFsHash)
 	if hash == fs.lastFsHash {
 		return nil
 	}
-	log.Println("Sending FS")
 	fs.lastFsMsgID, err = fs.sendFileSystem(packed, hash)
 	if err != nil {
 		return err
@@ -633,9 +644,11 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 		if !recursive {
 			return errors.New("Cannot remove directory. Consider setting recursive to true")
 		}
-		err = fs.network.SendMessage(header)
-		if err != nil {
-			return err
+		if fs.initialized {
+			err = fs.network.SendMessage(header)
+			if err != nil {
+				return err
+			}
 		}
 		entries, err := os.ReadDir(path.Join(fs.root, virtualPath))
 		if err != nil {
@@ -648,9 +661,11 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 			}
 		}
 	} else {
-		err = fs.network.SendMessage(header)
-		if err != nil {
-			return err
+		if fs.initialized {
+			err = fs.network.SendMessage(header)
+			if err != nil {
+				return err
+			}
 		}
 		hash, err := fs.md5(path.Join(fs.root, virtualPath))
 		if err != nil {
