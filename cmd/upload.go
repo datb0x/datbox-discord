@@ -3,6 +3,7 @@ package cmd
 import (
 	"datbox/comm"
 	"log"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 )
@@ -18,10 +19,14 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
+			absPhys, err := filepath.Abs(args[0])
+			if err != nil {
+				log.Fatalln(err)
+			}
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
 			writer.WriteByte(uploadFileVersion)
-			writer.WriteUtf8(args[0])
+			writer.WriteUtf8(absPhys)
 			writer.WriteUtf8(args[1])
 			err = client.Write(MSG_TYPE_UPLOAD, writer.Data)
 			if err != nil {
