@@ -755,6 +755,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		return errors.New("File already exists in virtual file system")
 	}
 
+	start := time.Now()
 	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network, fileVersion)
 	if err != nil {
 		return err
@@ -776,17 +777,15 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 				fs.Remove(virtualPath)
 				return event.Err
 			}
-			str := fmt.Sprintf("\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
-			logger <- append([]byte{2}, []byte(str)...)
+			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
 			break
 		} else {
-			str := fmt.Sprintf("\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
-			logger <- append([]byte{3}, []byte(str)...)
+			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
 		}
 	}
 
-	str := fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
-	logger <- append([]byte{0}, []byte(str)...)
+	logger <- fmt.Appendf([]byte{2}, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
+	logger <- fmt.Appendf([]byte{0}, "Time elapsed: %v", time.Since(start))
 
 	go func() {
 		packed, hash, err := fs.packFileSystem(false)
@@ -816,6 +815,7 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
 	}
 
+	start := time.Now()
 	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
 	if err != nil {
 		return err
@@ -836,17 +836,15 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 			if event.Err != nil {
 				return event.Err
 			}
-			str := fmt.Sprintf("\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
-			logger <- append([]byte{2}, []byte(str)...)
+			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
 			break
 		} else {
-			str := fmt.Sprintf("\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
-			logger <- append([]byte{3}, []byte(str)...)
+			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
 		}
 	}
 
-	str := fmt.Sprintf("\nDownloaded to %s successfully", physicalPath)
-	logger <- append([]byte{0}, []byte(str)...)
+	logger <- fmt.Appendf([]byte{2}, "\nDownloaded to %s successfully", physicalPath)
+	logger <- fmt.Appendf([]byte{0}, "Time elapsed: %v", time.Since(start))
 
 	return nil
 }
