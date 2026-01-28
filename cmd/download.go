@@ -18,14 +18,14 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
-			absPhys, err := filepath.Abs(args[0])
+			absPhys, err := filepath.Abs(args[1])
 			if err != nil {
 				log.Fatalln(err)
 			}
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
+			writer.WriteUtf8(args[0])
 			writer.WriteUtf8(absPhys)
-			writer.WriteUtf8(args[1])
 			err = client.Write(MSG_TYPE_DOWNLOAD, writer.Data)
 			if err != nil {
 				log.Println("Failed to write data to ipc")
