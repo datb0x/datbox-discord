@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 )
 
 const FileChunkSize = 10 * 1024 * 1023
@@ -39,31 +40,31 @@ type VirtualFile interface {
 	DownloadTo(path string, channel chan TransferEvent)
 }
 
-func CreateVirtualFile(path string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
-	if _, err := os.Stat(path); err == nil {
+func CreateVirtualFile(root, path, fsHash string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
+	if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 		return nil, errors.New("File already exists")
 	}
 	log.Printf("Creating virtual file with version %d", fileVersion)
 	switch fileVersion {
 	case 0:
-		return NewV0File(path, network), nil
+		return NewV0File(root, path, fsHash, network), nil
 	case 1:
-		return NewV1File(path, network), nil
+		return NewV1File(root, path, fsHash, network), nil
 	default:
 		return nil, errors.New("Unknown file version " + fmt.Sprint(fileVersion))
 	}
 }
 
-func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, error) {
-	stat, err := os.Stat(path)
+func OpenVirtualFile(root, path, fsHash string, network *network.DatboxNetwork) (VirtualFile, error) {
+	stat, err := os.Stat(filepath.Join(root, path))
 	if err != nil {
 		return nil, err
 	}
 	if (stat.Size() % 8) == 0 {
 		log.Printf("Opening virtual file with version 0")
-		return NewV0File(path, network), nil
+		return NewV0File(root, path, fsHash, network), nil
 	} else {
-		file, err := os.Open(path)
+		file, err := os.Open(filepath.Join(root, path))
 		if err != nil {
 			return nil, err
 		}
@@ -78,7 +79,7 @@ func OpenVirtualFile(path string, network *network.DatboxNetwork) (VirtualFile, 
 		log.Printf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
 		case 1:
-			return NewV1File(path, network), nil
+			return NewV1File(root, path, fsHash, network), nil
 		}
 	}
 	return nil, errors.New("Unknown file version")

@@ -1,16 +1,21 @@
 package server
 
 import (
+	"bytes"
 	"crypto/md5"
 	"datbox/network"
 	"datbox/virtualfile"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
+	"math"
 	"math/big"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,6 +24,7 @@ import (
 	"time"
 
 	cp "github.com/otiai10/copy"
+	"golang.org/x/crypto/blake2b"
 )
 
 type DatboxFileSystem struct {
@@ -26,6 +32,7 @@ type DatboxFileSystem struct {
 	root          string
 	network       *network.DatboxNetwork
 	fileReference map[string]int
+	lastFsHash    string
 }
 
 type FileInfo struct {
@@ -76,6 +83,11 @@ func NewFileSystem(dataDir string, maxJobs int, network *network.DatboxNetwork) 
 		json.Unmarshal(bytes, &fs.fileReference)
 	}
 
+	err := fs.syncIfNeeded()
+	if err != nil {
+		return nil, err
+	}
+
 	return fs, nil
 }
 
@@ -120,6 +132,246 @@ func (fs *DatboxFileSystem) saveReference() error {
 func (fs *DatboxFileSystem) exists(virtualPath string) bool {
 	_, err := os.Stat(path.Join(fs.root, virtualPath))
 	return err == nil
+}
+
+func (dbfs *DatboxFileSystem) packFileSystem(hashOnly bool) ([]byte, string, error) {
+	var data bytes.Buffer
+	hasher, err := blake2b.New256([]byte("DtBx"))
+	if err != nil {
+		return nil, "", err
+	}
+	var writer io.Writer
+	if hashOnly {
+		writer = hasher
+	} else {
+		writer = io.MultiWriter(&data, hasher)
+	}
+	octoBuf := make([]byte, 8)
+	err = filepath.Walk(dbfs.root, func(path string, info fs.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		file, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		path, err = filepath.Rel(dbfs.root, path)
+		if err != nil {
+			return err
+		}
+		binary.BigEndian.PutUint64(octoBuf, uint64(len(path)))
+		writer.Write(octoBuf)
+		writer.Write([]byte(path))
+		binary.BigEndian.PutUint64(octoBuf, uint64(info.Size()))
+		writer.Write(octoBuf)
+		writer.Write(file)
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return data.Bytes(), hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func (dbfs *DatboxFileSystem) mergeFileSystem(remoteFs []byte) error {
+	octoBuf := make([]byte, 8)
+	reader := bytes.NewReader(remoteFs)
+	for {
+		read, err := reader.Read(octoBuf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if read != 8 {
+			return errors.New("Did not read 8 bytes")
+		}
+		length := big.NewInt(0).SetBytes(octoBuf).Uint64()
+		buf := make([]byte, length)
+		read, err = reader.Read(buf)
+		if err != nil {
+			return err
+		}
+		if read != int(length) {
+			return fmt.Errorf("Did not read %d bytes", length)
+		}
+		path := string(buf)
+		read, err = reader.Read(octoBuf)
+		if err != nil {
+			return err
+		}
+		if read != 8 {
+			return errors.New("Did not read 8 bytes")
+		}
+		length = big.NewInt(0).SetBytes(octoBuf).Uint64()
+		buf = make([]byte, length)
+		read, err = reader.Read(buf)
+		if err != nil {
+			return err
+		}
+		if read != int(length) {
+			return fmt.Errorf("Did not read %d bytes", length)
+		}
+		if dbfs.exists(path) {
+			log.Printf("%s already exists locally. Overwrite with remote version? [y/n]", path)
+			var ans string
+			fmt.Scanf("%s", &ans)
+			if strings.ToLower(ans) == "n" {
+				continue
+			}
+		}
+		err = os.MkdirAll(filepath.Dir(filepath.Join(dbfs.root, path)), 0755)
+		if err != nil {
+			return err
+		}
+		err = os.WriteFile(filepath.Join(dbfs.root, path), buf, 0644)
+		if err != nil {
+			return err
+		}
+	}
+	log.Println("Merged remote filesystem")
+	return nil
+}
+
+func (fs *DatboxFileSystem) sendFileSystem(packed []byte, hash string) error {
+	header := network.NewHeader(network.ActionFileSystem)
+	header.Fields["hash"] = hash
+	header.Fields["chunks"] = fmt.Sprint(int64(math.Ceil(float64(len(packed)) / float64(virtualfile.FileChunkSize))))
+	reader := bytes.NewReader(packed)
+	buf := make([]byte, virtualfile.FileChunkSize)
+	index := 0
+	for {
+		read, err := reader.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		header.Fields["index"] = fmt.Sprint(index)
+		_, err = fs.network.SendAttachment(buf[:read], header)
+		if err != nil {
+			return err
+		}
+		header.Action = network.ActionFileSystemChunk
+		index++
+	}
+	log.Println("File system has been synchronized")
+	return nil
+}
+
+func (fs *DatboxFileSystem) syncIfNeeded() error {
+	fsMessage, err := fs.network.FetchLastMessage()
+	if err != nil {
+		return err
+	}
+	var header *network.DatboxHeader
+	var res *http.Response
+	var remoteFsData bytes.Buffer
+	var remoteFsHash string
+	var chunks int64
+	_, hash, err := fs.packFileSystem(true)
+	if err != nil {
+		return err
+	}
+	// Channel has no last message
+	if fsMessage == nil {
+		log.Println("No filesystem message found. Sync needed")
+		goto Sync
+	}
+	// Last message has no header
+	header, err = network.ParseHeader(fsMessage.Content)
+	if err != nil {
+		log.Println("Filesystem message does not have valid header. Sync needed")
+		goto Sync
+	}
+	// Header is not filesystem action
+	if header.Action != network.ActionFileSystem {
+		id := header.Fields["filesystem"]
+		// Header does not contain filesystem message ID
+		if id == "" {
+			log.Println("Last message does not contain filesystem. Sync needed")
+			goto Sync
+		}
+		fsMessage, err = fs.network.FetchMessage(id)
+		// Cannot fetch filesystem message
+		if err != nil {
+			log.Println("Error fetching filesystem message. Sync needed")
+			goto Sync
+		}
+		header, err = network.ParseHeader(fsMessage.Content)
+		// Message has no header
+		if err != nil {
+			log.Println("Filesystem message does not have valid header. Sync needed")
+			goto Sync
+		}
+		// Header is STILL not filesystem action
+		if header.Action != network.ActionFileSystem {
+			log.Println("Filesystem message is not of filesystem action. Sync needed")
+			goto Sync
+		}
+	}
+	if header.Fields["hash"] == hash {
+		fs.lastFsHash = hash
+		log.Println("Local filesystem matches remote filesystem. Sync not needed")
+		return nil
+	}
+	// Collect all chunks
+	if header.Fields["chunks"] == "" {
+		log.Println("Filesystem message header does not provide amount of chunks. Assuming to be 1...")
+		chunks = 0
+	} else {
+		chunks, err = strconv.ParseInt(header.Fields["chunks"], 10, 64)
+		if err != nil {
+			return err
+		}
+		chunks--
+	}
+	remoteFsHash = header.Fields["hash"]
+	res, err = http.Get(fsMessage.Attachments[0].URL)
+	if err != nil {
+		return err
+	}
+	io.Copy(&remoteFsData, res.Body)
+	for chunks > 0 {
+		messages, err := fs.network.FetchMessagesSince(fsMessage.ID, int(chunks))
+		if err != nil {
+			return err
+		}
+		if len(messages) == 0 {
+			return errors.New("No more messages found, but chunks are still incomplete")
+		}
+		for _, message := range messages {
+			header, err := network.ParseHeader(message.Content)
+			if err != nil {
+				continue
+			}
+			if header.Action == network.ActionFileSystemChunk && header.Fields["hash"] == remoteFsHash {
+				res, err = http.Get(message.Attachments[0].URL)
+				if err != nil {
+					return err
+				}
+				io.Copy(&remoteFsData, res.Body)
+				chunks--
+			}
+		}
+	}
+	err = fs.mergeFileSystem(remoteFsData.Bytes())
+	if err != nil {
+		return err
+	}
+Sync:
+	packed, hash, err := fs.packFileSystem(false)
+	if hash == remoteFsHash {
+		return nil
+	}
+	err = fs.sendFileSystem(packed, hash)
+	if err != nil {
+		return err
+	}
+	fs.lastFsHash = hash
+	return nil
 }
 
 func (fs *DatboxFileSystem) Mkdir(virtualPath string, all ...bool) error {
@@ -306,7 +558,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 			if refs >= 1 {
 				log.Println("Cannot delete remote. Another file referencing the same chunks exist")
 			} else {
-				file, err := virtualfile.OpenVirtualFile(path.Join(fs.root, virtualPath), fs.network)
+				file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsHash, fs.network)
 				if err != nil {
 					return err
 				}
@@ -361,7 +613,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		return errors.New("File already exists in virtual file system")
 	}
 
-	file, err := virtualfile.CreateVirtualFile(path.Join(fs.root, virtualPath), fs.network, fileVersion)
+	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsHash, fs.network, fileVersion)
 	if err != nil {
 		return err
 	}
@@ -406,7 +658,7 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
 	}
 
-	file, err := virtualfile.OpenVirtualFile(path.Join(fs.root, virtualPath), fs.network)
+	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsHash, fs.network)
 	if err != nil {
 		return err
 	}

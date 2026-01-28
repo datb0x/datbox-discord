@@ -40,11 +40,26 @@ func NewNetwork(token string, channelId string) (*DatboxNetwork, error) {
 	return network, nil
 }
 
-func (network *DatboxNetwork) SendAttachment(data []byte) (string, error) {
+func (network *DatboxNetwork) SendMessage(header *DatboxHeader) error {
+	_, err := network.session.ChannelMessageSend(network.channelId, header.String())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (network *DatboxNetwork) SendAttachment(data []byte, header *DatboxHeader) (string, error) {
 	hasher := md5.New()
 	hasher.Write(data)
 	hash := hex.EncodeToString(hasher.Sum(nil))
-	message, err := network.session.ChannelFileSend(network.channelId, hash, bytes.NewReader(data))
+	messageSend := discordgo.MessageSend{
+		Content: header.String(),
+		Files: []*discordgo.File{{
+			Name:   hash,
+			Reader: bytes.NewReader(data),
+		}},
+	}
+	message, err := network.session.ChannelMessageSendComplex(network.channelId, &messageSend)
 	if err != nil {
 		return "", err
 	}
@@ -91,4 +106,31 @@ func (network *DatboxNetwork) DeleteMessages(ids []string) {
 			log.Println("Remote delete failed", err)
 		}
 	}
+}
+
+func (network *DatboxNetwork) FetchLastMessage() (*discordgo.Message, error) {
+	messages, err := network.session.ChannelMessages(network.channelId, 1, "", "", "")
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	return messages[0], nil
+}
+
+func (network *DatboxNetwork) FetchMessagesSince(afterID string, limit int) ([]*discordgo.Message, error) {
+	messages, err := network.session.ChannelMessages(network.channelId, limit, "", afterID, "")
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+func (network *DatboxNetwork) FetchMessage(ID string) (*discordgo.Message, error) {
+	message, err := network.session.ChannelMessage(network.channelId, ID)
+	if err != nil {
+		return nil, err
+	}
+	return message, nil
 }

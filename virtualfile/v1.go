@@ -14,6 +14,7 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"golang.org/x/crypto/blake2b"
@@ -29,9 +30,11 @@ type V1File struct {
 	V0File
 }
 
-func NewV1File(path string, network *network.DatboxNetwork) *V1File {
+func NewV1File(root, path, fsHash string, network *network.DatboxNetwork) *V1File {
 	file := new(V1File)
-	file.Path = path
+	file.Path = filepath.Join(root, path)
+	file.RelPath = path
+	file.FileSystemHash = fsHash
 	file.network = network
 	return file
 }
@@ -118,6 +121,18 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		return
 	}
 
+	// Begin header
+	header := network.NewHeader(network.ActionBegin)
+	header.Fields["fs-hash"] = f.FileSystemHash
+	header.Fields["path"] = f.RelPath
+	err = f.network.SendMessage(header)
+	if err != nil {
+		return
+	}
+
+	// Chunk header
+	header.Action = network.ActionFileChunk
+
 	// Write file signature
 	f.file.Write([]byte{1})
 	f.file.Write([]byte("DtBx"))
@@ -133,6 +148,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
 	log.Printf("Starting upload of %s\n", path)
 	log.Printf("Chunks: %d\n", int(estimatedChunks))
+	header.Fields["chunks"] = fmt.Sprint(estimatedChunks)
 
 	big.NewInt(stat.Size()).FillBytes(f.octoBuf)
 	_, err = f.file.Write(f.octoBuf)
@@ -151,6 +167,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	}
 	defer input.Close()
 	totalBytes := int64(0)
+	index := 0
 	for {
 		read, err := input.Read(buf)
 		if err != nil && err != io.EOF {
@@ -197,7 +214,9 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		mode.CryptBlocks(data[aes.BlockSize:], padBytes)
 
 		// Send to Discord
-		id, err := f.network.SendAttachment(data)
+		header.Fields["index"] = fmt.Sprint(index)
+		index++
+		id, err := f.network.SendAttachment(data, header)
 		if err != nil {
 			return
 		}
@@ -222,7 +241,12 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
 	log.Printf("Finished upload of %s\n", path)
-	err = nil
+
+	// End header
+	header = network.NewHeader(network.ActionComplete)
+	header.Fields["fs-hash"] = f.FileSystemHash
+	header.Fields["path"] = f.RelPath
+	err = f.network.SendMessage(header)
 }
 
 func (f *V1File) Verify(checksum []byte) (bool, error) {

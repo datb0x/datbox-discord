@@ -12,23 +12,28 @@ import (
 	"math"
 	"math/big"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
 type V0File struct {
-	Path      string
-	writeMode bool
-	network   *network.DatboxNetwork
-	file      *os.File
-	chunks    int
-	size      uint64
-	octoBuf   []byte
-	checksum  []byte
+	Path           string
+	RelPath        string
+	FileSystemHash string
+	writeMode      bool
+	network        *network.DatboxNetwork
+	file           *os.File
+	chunks         int
+	size           uint64
+	octoBuf        []byte
+	checksum       []byte
 }
 
-func NewV0File(path string, network *network.DatboxNetwork) *V0File {
+func NewV0File(root, path, fsHash string, network *network.DatboxNetwork) *V0File {
 	file := new(V0File)
-	file.Path = path
+	file.Path = filepath.Join(root, path)
+	file.RelPath = path
+	file.FileSystemHash = fsHash
 	file.network = network
 	return file
 }
@@ -126,6 +131,19 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		err = errors.New("No file opened")
 		return
 	}
+
+	// Begin header
+	header := network.NewHeader(network.ActionBegin)
+	header.Fields["fs-hash"] = f.FileSystemHash
+	header.Fields["path"] = f.RelPath
+	err = f.network.SendMessage(header)
+	if err != nil {
+		return
+	}
+
+	// Chunk header
+	header.Action = network.ActionFileChunk
+
 	buf := make([]byte, 4096)
 	// Write file size
 	stat, err := os.Stat(path)
@@ -157,9 +175,12 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		readerBuf := make([]byte, 4096)
 		chunkBuf := make([]byte, FileChunkSize)
 		bufLength := 0
+		index := 0
 
 		upload := func() error {
-			id, err := f.network.SendAttachment(chunkBuf[:bufLength])
+			header.Fields["index"] = fmt.Sprint(index)
+			index++
+			id, err := f.network.SendAttachment(chunkBuf[:bufLength], header)
 			if err != nil {
 				return err
 			}
@@ -254,7 +275,12 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
 	log.Printf("Finished upload of %s\n", path)
-	err = nil
+
+	// End header
+	header = network.NewHeader(network.ActionComplete)
+	header.Fields["fs-hash"] = f.FileSystemHash
+	header.Fields["path"] = f.RelPath
+	err = f.network.SendMessage(header)
 }
 
 func (f *V0File) ReadMsgID() (uint64, error) {
