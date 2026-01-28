@@ -741,6 +741,11 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		return errors.New("Only file uploads are currently supported")
 	}
 
+	stat, err = fs.Stat(virtualPath, true)
+	if err == nil && stat.IsDir() {
+		virtualPath = path.Join(virtualPath, path.Base(physicalPath))
+	}
+
 	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
 	os.MkdirAll(virtualDir, 0755)
 	if _, err = os.Stat(virtualDir); err != nil {
