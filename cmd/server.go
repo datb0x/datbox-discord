@@ -32,12 +32,13 @@ var (
 	configPath  string
 	concurrency int
 	dataDir     string
+	encrypted   bool
 	token       string
 	serverCmd   = &cobra.Command{
 		Use:   "server",
 		Short: "Run the datbox local server",
 		Run: func(cmd *cobra.Command, args []string) {
-			config := server.NewConfig(configPath, channelId, dataDir, concurrency, token)
+			config := server.NewConfig(configPath, channelId, dataDir, concurrency, encrypted, token)
 			if err := config.Load(); err != nil {
 				log.Fatalln(err)
 			}
@@ -48,7 +49,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
-			fs, err := server.NewFileSystem(config.Raw.DataDir, config.Raw.Concurrency, network)
+			fs, err := server.NewFileSystem(config, network)
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -87,6 +88,7 @@ func init() {
 	serverCmd.Flags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
 	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
 	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", configDir, "Directory where data should be stored")
+	serverCmd.Flags().BoolVarP(&encrypted, "encrypted", "e", false, "Use an extra password to encrypt the entire file system on Discord")
 	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use config instead")
 }
 

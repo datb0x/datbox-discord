@@ -3,8 +3,6 @@ package virtualfile
 import (
 	"bytes"
 	"compress/flate"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"datbox/network"
 	"encoding/hex"
@@ -26,18 +24,20 @@ import (
 // [1:4] signature "DtBx"
 // [5:36] password
 type V1File struct {
-	password []byte
+	GlobalPassword []byte
+	Password       []byte
 
 	V0File
 }
 
-func NewV1File(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) *V1File {
+func NewV1File(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork) *V1File {
 	file := new(V1File)
 	file.Path = filepath.Join(root, path)
 	file.RelPath = path
 	file.FileSystemMsg = fsMsg
 	file.FileSystemHash = fsHash
 	file.network = network
+	file.GlobalPassword = globalPassword
 	return file
 }
 
@@ -47,7 +47,7 @@ func (f *V1File) Version() int {
 
 func (f *V1File) OpenOrCreate() error {
 	f.octoBuf = make([]byte, 8)
-	f.password = make([]byte, 32)
+	f.Password = make([]byte, 32)
 	stat, err := os.Stat(f.Path)
 	if err != nil {
 		// Not exist
@@ -57,7 +57,7 @@ func (f *V1File) OpenOrCreate() error {
 		}
 		f.file = file
 		f.writeMode = true
-		rand.Read(f.password)
+		rand.Read(f.Password)
 	} else {
 		// Exists
 		file, err := os.Open(f.Path)
@@ -84,7 +84,7 @@ func (f *V1File) OpenOrCreate() error {
 			return errors.New("Wrong file signature")
 		}
 		// File encryption key
-		_, err = io.ReadFull(file, f.password)
+		_, err = io.ReadFull(file, f.Password)
 		if err != nil {
 			return err
 		}
@@ -100,12 +100,26 @@ func (f *V1File) OpenOrCreate() error {
 	return nil
 }
 
+func (f *V1File) CopyHeader(header *network.DatboxHeader) (err error) {
+	f.Password, err = hex.DecodeString(header.Fields["password"])
+	if err != nil {
+		return
+	}
+	if f.GlobalPassword != nil {
+		f.Password, err = SymmetricDecrypt(f.GlobalPassword, f.Password)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
 func (f *V1File) WriteHeader() error {
 	// Write file signature
 	f.file.Write([]byte{1})
 	f.file.Write([]byte("DtBx"))
 	// Write encryption key
-	f.file.Write(f.password)
+	f.file.Write(f.Password)
 	// Write size
 	big.NewInt(int64(f.size)).FillBytes(f.octoBuf)
 	_, err := f.file.Write(f.octoBuf)
@@ -141,10 +155,27 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Fields["path"] = f.RelPath
 	header.Fields["version"] = "1"
 	header.Fields["size"] = fmt.Sprint(f.size)
+
+	// Encrypt password if necessary
+	var filePassword []byte
+	if f.GlobalPassword != nil {
+		filePassword, err = SymmetricEncrypt(f.GlobalPassword, f.Password)
+		if err != nil {
+			return
+		}
+	} else {
+		filePassword = f.Password
+	}
+	header.Fields["password"] = hex.EncodeToString(filePassword)
+
 	err = f.network.SendMessage(header)
 	if err != nil {
 		return
 	}
+
+	// Delete fields for next header
+	delete(header.Fields, "size")
+	delete(header.Fields, "password")
 
 	// Chunk header
 	header.Action = network.ActionFileChunk
@@ -174,14 +205,8 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	index := 0
 	for {
 		read, err := ReadFill(input, buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
+		if err != nil && err != io.EOF {
 			return
-		}
-		if read == 0 {
-			break
 		}
 		// Update hash
 		hasher.Write(buf[:read])
@@ -203,22 +228,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		}
 
 		// Encrypt data
-		block, err := aes.NewCipher(f.password)
-		if err != nil {
-			return
-		}
-
-		padding := aes.BlockSize - len(compressed)%aes.BlockSize
-		padBytes := append(compressed, bytes.Repeat([]byte{byte(padding)}, padding)...)
-
-		data := make([]byte, aes.BlockSize+len(padBytes))
-		iv := data[:aes.BlockSize]
-		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-			return
-		}
-
-		mode := cipher.NewCBCEncrypter(block, iv)
-		mode.CryptBlocks(data[aes.BlockSize:], padBytes)
+		data, err := SymmetricEncrypt(f.Password, compressed)
 
 		// Send to Discord
 		header.Fields["index"] = fmt.Sprint(index)
@@ -238,6 +248,9 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 			Current: totalBytes,
 			Total:   stat.Size(),
 		}
+		if read != len(buf) {
+			break
+		}
 	}
 	fmt.Println()
 
@@ -251,6 +264,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
+	header.Fields["fs-msg"] = f.FileSystemMsg
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
@@ -282,22 +296,7 @@ func (f *V1File) GetNextChunk() ([]byte, error) {
 	}
 
 	// Decrypt
-	block, err := aes.NewCipher(f.password)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) < aes.BlockSize {
-		return nil, errors.New("Encrypted data is too short")
-	}
-
-	iv := data[:aes.BlockSize]
-	data = data[aes.BlockSize:]
-
-	mode := cipher.NewCBCDecrypter(block, iv)
-	mode.CryptBlocks(data, data)
-
-	padding := int(data[len(data)-1])
-	data = data[:len(data)-padding]
+	data, err = SymmetricDecrypt(f.Password, data)
 	// Inflate
 	return io.ReadAll(flate.NewReader(bytes.NewReader(data)))
 }

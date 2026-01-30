@@ -113,6 +113,10 @@ func (f *V0File) Write(data []byte) error {
 	return nil
 }
 
+func (f *V0File) CopyHeader(header *network.DatboxHeader) error {
+	return nil
+}
+
 func (f *V0File) WriteHeader() error {
 	// Write file size
 	big.NewInt(int64(f.size)).FillBytes(f.octoBuf)
@@ -173,6 +177,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// Chunk header
 	header.Action = network.ActionFileChunk
+	delete(header.Fields, "size")
 
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
 	log.Printf("Starting upload of %s\n", path)
@@ -213,21 +218,18 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 
 		for {
 			read, err := ReadFill(bufReader, chunkBuf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
+			if err != nil && err != io.EOF {
 				readerSignal <- err
 				return
-			}
-			if read == 0 {
-				break
 			}
 
 			err = upload(read)
 			if err != nil {
 				readerSignal <- err
 				return
+			}
+			if read != len(chunkBuf) {
+				break
 			}
 		}
 	}()
@@ -281,6 +283,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
+	header.Fields["fs-msg"] = f.FileSystemMsg
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)

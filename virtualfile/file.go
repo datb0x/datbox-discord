@@ -1,6 +1,10 @@
 package virtualfile
 
 import (
+	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"datbox/network"
 	"errors"
 	"fmt"
@@ -28,6 +32,7 @@ type VirtualFile interface {
 
 	OpenOrCreate() error
 	Close() error
+	CopyHeader(header *network.DatboxHeader) error
 
 	Write(data []byte) error
 	WriteHeader() error
@@ -43,7 +48,7 @@ type VirtualFile interface {
 	DownloadTo(path string, channel chan TransferEvent)
 }
 
-func CreateVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
+func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
 	if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 		return nil, errors.New("File already exists")
 	}
@@ -53,7 +58,7 @@ func CreateVirtualFile(root, path, fsMsg, fsHash string, network *network.Datbox
 	case 0:
 		return NewV0File(root, path, fsMsg, fsHash, network), nil
 	case 1:
-		return NewV1File(root, path, fsMsg, fsHash, network), nil
+		return NewV1File(root, path, fsMsg, fsHash, globalPassword, network), nil
 	default:
 		return nil, errors.New("Unknown file version " + fmt.Sprint(fileVersion))
 	}
@@ -80,7 +85,7 @@ func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNe
 		log.Printf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
 		case 1:
-			return NewV1File(root, path, fsMsg, fsHash, network), nil
+			return NewV1File(root, path, fsMsg, fsHash, nil, network), nil
 		}
 	}
 	return nil, errors.New("Unknown file version")
@@ -97,4 +102,47 @@ func ReadFill(r io.Reader, buf []byte) (n int, err error) {
 		}
 	}
 	return
+}
+
+func SymmetricEncrypt(password, plain []byte) ([]byte, error) {
+	block, err := aes.NewCipher(password)
+	if err != nil {
+		return nil, err
+	}
+
+	padding := aes.BlockSize - len(plain)%aes.BlockSize
+	padBytes := append(plain, bytes.Repeat([]byte{byte(padding)}, padding)...)
+
+	data := make([]byte, aes.BlockSize+len(padBytes))
+	iv := data[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+
+	mode := cipher.NewCBCEncrypter(block, iv)
+	mode.CryptBlocks(data[aes.BlockSize:], padBytes)
+	return data, nil
+}
+
+func SymmetricDecrypt(password, data []byte) ([]byte, error) {
+	block, err := aes.NewCipher(password)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < aes.BlockSize {
+		return nil, errors.New("Encrypted data is too short")
+	}
+
+	plain := make([]byte, len(data))
+	copy(plain, data)
+
+	iv := plain[:aes.BlockSize]
+	plain = plain[aes.BlockSize:]
+
+	mode := cipher.NewCBCDecrypter(block, iv)
+	mode.CryptBlocks(plain, plain)
+
+	padding := int(plain[len(plain)-1])
+	plain = plain[:len(plain)-padding]
+	return plain, nil
 }

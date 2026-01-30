@@ -1,33 +1,42 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
+	"syscall"
+
+	"golang.org/x/term"
 )
 
 type RawConfig struct {
 	ChannelId   string `json:"channelId"`
 	DataDir     string `json:"dataDir"`
 	Concurrency int    `json:"concurrency"`
+	Password    string `json:"password"`
 	Token       string `json:"token"`
 }
 
 type DatboxConfig struct {
 	configPath string
 	Raw        RawConfig
+	Encrypted  bool
 }
 
-func NewConfig(configPath string, channelId, dataDir string, concurrency int, token string) *DatboxConfig {
+func NewConfig(configPath string, channelId, dataDir string, concurrency int, encrypted bool, token string) *DatboxConfig {
 	config := new(DatboxConfig)
 	config.configPath = configPath
 	config.Raw.ChannelId = channelId
 	config.Raw.DataDir = dataDir
 	config.Raw.Concurrency = concurrency
 	config.Raw.Token = token
+	config.Encrypted = encrypted
 	return config
 }
 
@@ -55,6 +64,9 @@ func (config *DatboxConfig) Load() error {
 		if rawConfig.Concurrency != 0 {
 			config.Raw.Concurrency = rawConfig.Concurrency
 		}
+		if rawConfig.Password != "" {
+			config.Raw.Password = rawConfig.Password
+		}
 		if rawConfig.Token != "" {
 			config.Raw.Token = rawConfig.Token
 		}
@@ -72,6 +84,18 @@ func (config *DatboxConfig) Load() error {
 	}
 	if config.Raw.Token == "" {
 		return errors.New("Missing token")
+	}
+	if config.Encrypted && config.Raw.Password == "" {
+		log.Println("Encryption set to true, but there's no password")
+		fmt.Print("New password: ")
+		password, err := term.ReadPassword(syscall.Stdin)
+		if err != nil {
+			return err
+		}
+		fmt.Println()
+		hasher := sha256.New()
+		hasher.Write(password)
+		config.Raw.Password = hex.EncodeToString(hasher.Sum(nil))
 	}
 	return nil
 }

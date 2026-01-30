@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/sha256"
 	"datbox/network"
 	"datbox/virtualfile"
 	"encoding/binary"
@@ -21,14 +22,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	cp "github.com/otiai10/copy"
 	"golang.org/x/crypto/blake2b"
+	"golang.org/x/term"
 )
 
 type DatboxFileSystem struct {
-	dataDir       string
+	config        *DatboxConfig
 	root          string
 	network       *network.DatboxNetwork
 	fileReference map[string]int
@@ -60,17 +63,17 @@ type UploadResult struct {
 	Checksum []byte
 }
 
-func NewFileSystem(dataDir string, maxJobs int, network *network.DatboxNetwork) (*DatboxFileSystem, error) {
+func NewFileSystem(config *DatboxConfig, network *network.DatboxNetwork) (*DatboxFileSystem, error) {
 	fs := new(DatboxFileSystem)
-	fs.dataDir = dataDir
-	fs.root = path.Join(dataDir, "root")
+	fs.config = config
+	fs.root = path.Join(fs.config.Raw.DataDir, "root")
 	fs.network = network
 	fs.fileReference = map[string]int{}
 	fs.initialized = false
 
 	os.MkdirAll(fs.root, 0755)
 
-	refPath := path.Join(dataDir, "ref.json")
+	refPath := path.Join(fs.config.Raw.DataDir, "ref.json")
 	if _, err := os.Stat(refPath); err == nil {
 		// config exists
 		file, err := os.Open(refPath)
@@ -130,7 +133,7 @@ func (fs *DatboxFileSystem) saveReference() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path.Join(fs.dataDir, "ref.json"), bytes, 0644)
+	return os.WriteFile(path.Join(fs.config.Raw.DataDir, "ref.json"), bytes, 0644)
 }
 
 func (fs *DatboxFileSystem) exists(virtualPath string) bool {
@@ -244,20 +247,39 @@ func (fs *DatboxFileSystem) sendFileSystem(packed []byte, hash string) (string, 
 	header := network.NewHeader(network.ActionFileSystem)
 	header.Fields["hash"] = hash
 	header.Fields["chunks"] = fmt.Sprint(int64(math.Ceil(float64(len(packed)) / float64(virtualfile.FileChunkSize))))
+	// Write hashed password
+	var encryptPassword []byte
+	if fs.config.Encrypted {
+		decoded, err := hex.DecodeString(fs.config.Raw.Password)
+		if err != nil {
+			return "", err
+		}
+		encryptPassword = decoded
+		hasher := sha256.New()
+		hasher.Write(encryptPassword)
+		header.Fields["pw-hash"] = hex.EncodeToString(hasher.Sum(nil))
+	}
 	reader := bytes.NewReader(packed)
 	buf := make([]byte, virtualfile.FileChunkSize)
 	index := 0
 	var id string
 	for {
 		read, err := virtualfile.ReadFill(reader, buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
+		if err != nil && err != io.EOF {
 			return "", err
 		}
 		header.Fields["index"] = fmt.Sprint(index)
-		msgID, err := fs.network.SendAttachment(buf[:read], header)
+		// Encrypt if needed
+		var data []byte
+		if encryptPassword != nil {
+			data, err = virtualfile.SymmetricEncrypt(encryptPassword, buf[:read])
+			if err != nil {
+				return "", err
+			}
+		} else {
+			data = buf[:read]
+		}
+		msgID, err := fs.network.SendAttachment(data, header)
 		if err != nil {
 			return "", err
 		}
@@ -266,6 +288,9 @@ func (fs *DatboxFileSystem) sendFileSystem(packed []byte, hash string) (string, 
 		}
 		header.Action = network.ActionFileSystemChunk
 		index++
+		if read != len(buf) {
+			break
+		}
 	}
 	log.Println("File system has been synchronized")
 	return id, nil
@@ -278,9 +303,11 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 	}
 	var header *network.DatboxHeader
 	var res *http.Response
+	var remoteFsChunk []byte
 	var remoteFsData bytes.Buffer
 	var chunks int64
 	var lastMessageID string
+	var decryptPassword []byte
 	_, hash, err := fs.packFileSystem(true)
 	if err != nil {
 		return err
@@ -323,7 +350,49 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 			goto Sync
 		}
 	}
+	// Check if filesystem is encrypted
+	if header.Fields["pw-hash"] != "" {
+		hasher := sha256.New()
+		var password string
+		// Check if stored password is correct
+		if fs.config.Raw.Password != "" {
+			decoded, err := hex.DecodeString(fs.config.Raw.Password)
+			if err != nil {
+				return err
+			}
+			// Hash once
+			hasher.Write(decoded)
+			if header.Fields["pw-hash"] == hex.EncodeToString(hasher.Sum(nil)) {
+				decryptPassword = decoded
+				goto SkipPassword
+			}
+		}
+		// Ask user for password
+		log.Println("Filesystem is encrypted with password different from stored password.")
+		fmt.Print("Please enter the password: ")
+		{
+			pw, err := term.ReadPassword(syscall.Stdin)
+			if err != nil {
+				return err
+			}
+			fmt.Println()
+			password = string(pw)
+		}
+		{
+			// Hash twice
+			hasher.Write([]byte(password))
+			hash1 := hasher.Sum(nil)
+			hasher = sha256.New()
+			hasher.Write(hash1)
+			if header.Fields["pw-hash"] != hex.EncodeToString(hasher.Sum(nil)) {
+				return errors.New("Passwords don't match")
+			}
+			decryptPassword = hash1
+		}
+	SkipPassword:
+	}
 	fs.lastFsMsgID = fsMessage.ID
+	// Check if filesystems are already the same
 	if header.Fields["hash"] == hash {
 		fs.lastFsHash = hash
 		log.Println("Local filesystem matches remote filesystem. Sync not needed")
@@ -345,7 +414,23 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 	if err != nil {
 		return err
 	}
-	io.Copy(&remoteFsData, res.Body)
+	// Decrypt if needed
+	if decryptPassword != nil {
+		all, err := io.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
+		remoteFsChunk, err = virtualfile.SymmetricDecrypt(decryptPassword, all)
+		if err != nil {
+			return err
+		}
+	} else {
+		remoteFsChunk, err = io.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
+	}
+	remoteFsData.Write(remoteFsChunk)
 	{
 		seenIDs := map[string]bool{}
 		seenIDs[lastMessageID] = true
@@ -370,7 +455,22 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 					if err != nil {
 						return err
 					}
-					io.Copy(&remoteFsData, res.Body)
+					if decryptPassword != nil {
+						all, err := io.ReadAll(res.Body)
+						if err != nil {
+							return err
+						}
+						remoteFsChunk, err = virtualfile.SymmetricDecrypt(decryptPassword, all)
+						if err != nil {
+							return err
+						}
+					} else {
+						remoteFsChunk, err = io.ReadAll(res.Body)
+						if err != nil {
+							return err
+						}
+					}
+					remoteFsData.Write(remoteFsChunk)
 					chunks--
 					lastMessageID = message.ID
 				}
@@ -421,7 +521,11 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 					if err != nil {
 						version = 1
 					}
-					file, err := virtualfile.CreateVirtualFile(fs.root, header.Fields["path"], fs.lastFsMsgID, fs.lastFsHash, fs.network, byte(version))
+					file, err := virtualfile.CreateVirtualFile(fs.root, header.Fields["path"], fs.lastFsMsgID, fs.lastFsHash, decryptPassword, fs.network, byte(version))
+					if err != nil {
+						return err
+					}
+					err = file.CopyHeader(header)
 					if err != nil {
 						return err
 					}
@@ -738,7 +842,14 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 	}
 
 	start := time.Now()
-	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network, fileVersion)
+	var globalPassword []byte
+	if fs.config.Encrypted {
+		globalPassword, err = hex.DecodeString(fs.config.Raw.Password)
+		if err != nil {
+			return err
+		}
+	}
+	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, fs.network, fileVersion)
 	if err != nil {
 		return err
 	}
@@ -767,7 +878,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 	}
 
 	logger <- fmt.Appendf([]byte{2}, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
-	logger <- fmt.Appendf([]byte{0}, "Time elapsed: %v", time.Since(start))
+	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %v", time.Since(start))
 
 	go func() {
 		packed, hash, err := fs.packFileSystem(false)
@@ -826,7 +937,7 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 	}
 
 	logger <- fmt.Appendf([]byte{2}, "\nDownloaded to %s successfully", physicalPath)
-	logger <- fmt.Appendf([]byte{0}, "Time elapsed: %v", time.Since(start))
+	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %v", time.Since(start))
 
 	return nil
 }
