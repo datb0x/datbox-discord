@@ -130,20 +130,14 @@ func (f *V1File) WriteHeader() error {
 }
 
 func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
-	var err error
-	defer func() {
-		channel <- TransferEvent{
-			Done: true,
-			Err:  err,
-		}
-	}()
 	if f.file == nil {
-		err = errors.New("No file opened")
+		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 
 	stat, err := os.Stat(path)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	f.size = uint64(stat.Size())
@@ -161,6 +155,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	if f.GlobalPassword != nil {
 		filePassword, err = SymmetricEncrypt(f.GlobalPassword, f.Password)
 		if err != nil {
+			endTransfer(channel, err)
 			return
 		}
 	} else {
@@ -170,6 +165,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	err = f.network.SendMessage(header)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 
@@ -193,11 +189,13 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	// Piggyback file checksum
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 
 	input, err := os.Open(path)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	defer input.Close()
@@ -206,6 +204,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	for {
 		read, err := ReadFill(input, buf)
 		if err != nil && err != io.EOF {
+			endTransfer(channel, err)
 			return
 		}
 		// Update hash
@@ -224,17 +223,23 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		}()
 		compressed, err := io.ReadAll(pipeReader)
 		if err != nil {
+			endTransfer(channel, err)
 			return
 		}
 
 		// Encrypt data
 		data, err := SymmetricEncrypt(f.Password, compressed)
+		if err != nil {
+			endTransfer(channel, err)
+			return
+		}
 
 		// Send to Discord
 		header.Fields["index"] = fmt.Sprint(index)
 		index++
 		id, err := f.network.SendAttachment(data, header)
 		if err != nil {
+			endTransfer(channel, err)
 			return
 		}
 		parsed, err := strconv.ParseUint(id, 10, 64)
@@ -269,6 +274,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
 	err = f.network.SendMessage(header)
+	endTransfer(channel, err)
 }
 
 func (f *V1File) Verify(checksum []byte) (bool, error) {
@@ -302,19 +308,13 @@ func (f *V1File) GetNextChunk() ([]byte, error) {
 }
 
 func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
-	var err error
-	defer func() {
-		channel <- TransferEvent{
-			Done: true,
-			Err:  err,
-		}
-	}()
 	if f.file == nil {
-		err = errors.New("No file opened")
+		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 	writer, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	defer writer.Close()
@@ -323,6 +323,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
@@ -337,6 +338,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 			if err == io.EOF {
 				break
 			}
+			endTransfer(channel, err)
 			return
 		}
 		hasher.Write(data)
@@ -353,12 +355,13 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	if !matched {
-		err = errors.New("Downloaded file checksum doesn't match")
+		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
 	log.Printf("Finished download of %s\n", f.Path)
-	err = nil
+	endTransfer(channel, nil)
 }

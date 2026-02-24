@@ -861,6 +861,22 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		return errors.New("File should be in write mode")
 	}
 
+	// Defer syncing
+	defer func() {
+		packed, hash, err := fs.packFileSystem(false)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		id, err := fs.sendFileSystem(packed, hash)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		fs.lastFsMsgID = id
+		fs.lastFsHash = hash
+	}()
+
 	eventSignal := make(chan virtualfile.TransferEvent)
 	go file.UploadFrom(physicalPath, eventSignal)
 	for {
@@ -879,21 +895,6 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 
 	logger <- fmt.Appendf([]byte{2}, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
 	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %v", time.Since(start))
-
-	go func() {
-		packed, hash, err := fs.packFileSystem(false)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		id, err := fs.sendFileSystem(packed, hash)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		fs.lastFsMsgID = id
-		fs.lastFsHash = hash
-	}()
 
 	return nil
 }

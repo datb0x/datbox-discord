@@ -93,13 +93,13 @@ func (network *DatboxNetwork) DeleteMessages(ids []string) {
 		}
 	}
 	if len(bulk) > 0 {
-		log.Printf("Bulk deleting the following messages: %s", strings.Join(bulk, ", "))
+		log.Printf("Bulk deleting the following messages: %s\n", strings.Join(bulk, ", "))
 		err := network.session.ChannelMessagesBulkDelete(network.channelId, bulk)
 		if err != nil {
 			log.Println("Remote bulk delete failed", err)
 		}
 	}
-	log.Printf("Deleting the following messages individually: %s", strings.Join(individual, ", "))
+	log.Printf("Deleting the following messages individually: %s\n", strings.Join(individual, ", "))
 	for _, id := range individual {
 		err := network.session.ChannelMessageDelete(network.channelId, id)
 		if err != nil {

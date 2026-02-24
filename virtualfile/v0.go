@@ -144,21 +144,15 @@ func (f *V0File) WriteMsgID(id uint64) error {
 }
 
 func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
-	var err error
-	defer func() {
-		channel <- TransferEvent{
-			Done: true,
-			Err:  err,
-		}
-	}()
 	if f.file == nil {
-		err = errors.New("No file opened")
+		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 
 	buf := make([]byte, 4096)
 	stat, err := os.Stat(path)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	f.size = uint64(stat.Size())
@@ -172,6 +166,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Fields["size"] = fmt.Sprint(f.size)
 	err = f.network.SendMessage(header)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 
@@ -188,6 +183,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 
 	input, err := os.Open(path)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	defer input.Close()
@@ -239,6 +235,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	for {
 		read, err := input.Read(buf)
 		if err != nil && err != io.EOF {
+			endTransfer(channel, err)
 			return
 		}
 		if read == 0 {
@@ -247,12 +244,14 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		select {
 		case err, ok := <-readerSignal:
 			if err != nil && ok {
+				endTransfer(channel, err)
 				return
 			}
 		default:
 		}
 		_, err = gzipWriter.Write(buf[:read])
 		if err != nil {
+			endTransfer(channel, err)
 			return
 		}
 		totalBytes += int64(read)
@@ -269,6 +268,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	}
 	err = <-readerSignal
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	fmt.Println()
@@ -288,6 +288,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
 	err = f.network.SendMessage(header)
+	endTransfer(channel, err)
 }
 
 func (f *V0File) ReadMsgID() (uint64, error) {
@@ -346,24 +347,19 @@ func (f *V0File) GetNextChunkRaw() ([]byte, error) {
 }
 
 func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
-	var err error
-	defer func() {
-		channel <- TransferEvent{
-			Done: true,
-			Err:  err,
-		}
-	}()
 	if f.file == nil {
-		err = errors.New("No file opened")
+		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 	writer, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	defer writer.Close()
 	stat, err := os.Stat(f.Path)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 
@@ -422,6 +418,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 			if err == io.EOF {
 				break
 			}
+			endTransfer(channel, err)
 			return
 		}
 		hasher.Write(data)
@@ -429,12 +426,14 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		select {
 		case err, ok = <-gzipSignal:
 			if ok && err != nil {
+				endTransfer(channel, err)
 				return
 			}
 		default:
 		}
 		_, err = pipeWriter.Write(data)
 		if err != nil {
+			endTransfer(channel, err)
 			return
 		}
 		chunks++
@@ -444,6 +443,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 	// Wait for gzip to be done
 	err = <-gzipSignal
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	fmt.Println()
@@ -451,12 +451,13 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 	newChecksum := hasher.Sum(nil)
 	matched, err := f.Verify(newChecksum)
 	if err != nil {
+		endTransfer(channel, err)
 		return
 	}
 	if !matched {
-		err = errors.New("Downloaded file checksum doesn't match")
+		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
 	log.Printf("Finished download of %s\n", f.Path)
-	err = nil
+	endTransfer(channel, nil)
 }

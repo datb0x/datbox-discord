@@ -146,3 +146,10 @@ func SymmetricDecrypt(password, data []byte) ([]byte, error) {
 	plain = plain[:len(plain)-padding]
 	return plain, nil
 }
+
+func endTransfer(channel chan TransferEvent, err error) {
+	channel <- TransferEvent{
+		Done: true,
+		Err:  err,
+	}
+}
