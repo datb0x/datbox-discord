@@ -381,7 +381,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		writer.Write(data)
 		totalBytes += len(data)
 		chunks++
-		fmt.Printf("(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
+		log.Printf("(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
 		channel <- TransferEvent{
 			Current: int64(totalBytes),
 			Total:   f.Size(),
