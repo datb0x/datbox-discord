@@ -387,7 +387,6 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 			Total:   f.Size(),
 		}
 	}
-	fmt.Println()
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {
@@ -398,6 +397,6 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("(%s) Downloaded", downloadId, f.Path)
+	log.Printf("(%s) Downloaded", downloadId)
 	endTransfer(channel, nil)
 }

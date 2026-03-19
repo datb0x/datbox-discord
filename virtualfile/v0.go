@@ -448,7 +448,6 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, err)
 		return
 	}
-	fmt.Println()
 
 	newChecksum := hasher.Sum(nil)
 	matched, err := f.Verify(newChecksum)
