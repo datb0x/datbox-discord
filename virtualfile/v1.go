@@ -203,7 +203,6 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	futures := structs.NewQueue[structs.Future[int64]](f.network.Uploader.Concurrency)
 	readBytes := make(chan int, f.network.Uploader.Concurrency)
-	totalBytes := int64(0)
 	index := 0
 
 	dequeueFuture := func() {
@@ -217,12 +216,21 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
 		big.NewInt(*id).FillBytes(f.octoBuf)
 		f.file.Write(f.octoBuf)
-		totalBytes += int64(<-readBytes)
-		channel <- TransferEvent{
-			Current: totalBytes,
-			Total:   stat.Size(),
-		}
 	}
+
+	// Progress updater
+	go func() {
+		size := stat.Size()
+		totalBytes := int64(0)
+		for totalBytes < size {
+			read := <-readBytes
+			totalBytes += int64(read)
+			channel <- TransferEvent{
+				Current: totalBytes,
+				Total:   size,
+			}
+		}
+	}()
 
 	for {
 		read, err := ReadFill(input, buf)
