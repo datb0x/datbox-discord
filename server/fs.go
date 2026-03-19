@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	cp "github.com/otiai10/copy"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
@@ -886,15 +887,15 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 				fs.Remove(virtualPath)
 				return event.Err
 			}
-			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
+			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(start).Seconds()))))
 			break
 		} else {
-			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
+			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(start).Seconds()))))
 		}
 	}
 
 	logger <- fmt.Appendf([]byte{2}, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
-	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %v", time.Since(start))
+	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %s", humanize.RelTime(start, time.Now(), "", ""))
 
 	return nil
 }
@@ -930,15 +931,15 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 			if event.Err != nil {
 				return event.Err
 			}
-			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%d / %d)", file.Size(), file.Size())
+			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(start).Seconds()))))
 			break
 		} else {
-			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%d / %d)", int(100*event.Current/event.Total), event.Current, event.Total)
+			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(start).Seconds()))))
 		}
 	}
 
 	logger <- fmt.Appendf([]byte{2}, "\nDownloaded to %s successfully", physicalPath)
-	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %v", time.Since(start))
+	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %s", humanize.RelTime(start, time.Now(), "", ""))
 
 	return nil
 }

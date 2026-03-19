@@ -7,12 +7,11 @@ import (
 	"fmt"
 	"log"
 	"path"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/adrg/xdg"
-	"github.com/docker/go-units"
+	"github.com/dustin/go-humanize"
 	ipc "github.com/james-barrow/golang-ipc"
 	"github.com/spf13/cobra"
 )
@@ -177,15 +176,12 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 				sizes := make([]string, len(entries))
 				pad := 0
-				re := regexp.MustCompile(`( \w)?B`)
 				for ii, entry := range entries {
 					var size string
 					if human == 1 {
-						size = units.HumanSize(float64(entry.Stat.Size()))
-						size = strings.ToUpper(re.ReplaceAllString(size, ""))
-						if len(size) > 4 {
-							size = size[0:2] + string(size[len(size)-1])
-						}
+						size = humanize.Bytes(uint64(entry.Stat.Size()))
+						size = strings.Replace(size, " ", "", 1)
+						size = strings.Replace(size, "B", "", 1)
 					} else {
 						size = fmt.Sprint(entry.Stat.Size())
 					}
