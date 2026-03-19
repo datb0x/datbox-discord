@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/typical-developers/discord-webhooks-go/webhooks"
@@ -41,31 +42,40 @@ func NewConcurrentUploader(network *DatboxNetwork, concurrency int) (*Concurrent
 		return nil, err
 	}
 
-	if len(channelWebhooks) < concurrency {
-		log.Printf("Channel doesn't have enough webhooks. Creating %d new webhooks...", concurrency-len(channelWebhooks))
-		for len(channelWebhooks) < concurrency {
-			webhook, err := network.session.WebhookCreate(network.channelId, fmt.Sprintf("concurrent-uploader #%d", len(channelWebhooks)), "")
-			if err != nil {
-				return nil, err
-			}
-			channelWebhooks = append(channelWebhooks, webhook)
-		}
-	} else {
-		log.Print("Channel has enough webhooks")
-	}
-
 	uploader := new(ConcurrentUploader)
 	uploader.network = network
 	uploader.Concurrency = concurrency
 	uploader.semaphore = semaphore.NewWeighted(int64(concurrency))
+
 	for _, webhook := range channelWebhooks {
+		if webhook.Token == "" {
+			continue
+		}
 		client := webhooks.NewWebhookClient(webhook.ID, webhook.Token)
 		uploader.webhooks = append(uploader.webhooks, &ClientWrapper{
 			client: client,
 			mu:     sync.Mutex{},
 		})
+		if len(uploader.webhooks) >= concurrency {
+			break
+		}
 	}
+	log.Printf("Collected %d webhooks for uploader", len(uploader.webhooks))
 
+	if len(uploader.webhooks) < concurrency {
+		log.Printf("Channel doesn't have enough webhooks. Creating %d new webhooks...", concurrency-len(uploader.webhooks))
+		for len(uploader.webhooks) < concurrency {
+			webhook, err := network.session.WebhookCreate(network.channelId, fmt.Sprintf("concurrent-uploader #%d", len(uploader.webhooks)), "")
+			if err != nil {
+				return nil, err
+			}
+			client := webhooks.NewWebhookClient(webhook.ID, webhook.Token)
+			uploader.webhooks = append(uploader.webhooks, &ClientWrapper{
+				client: client,
+				mu:     sync.Mutex{},
+			})
+		}
+	}
 	return uploader, nil
 }
 
@@ -105,17 +115,24 @@ func (uploader *ConcurrentUploader) SendAttachment(data []byte, content string, 
 		}
 	}
 	defer wrapper.mu.Unlock()
-	response, err := wrapper.client.SendMessage(&webhooks.WebhookPayload{
-		Content: &content,
-		Files: []*webhooks.WebhookFile{
-			&webhooks.WebhookFile{
-				Name:   hash,
-				Reader: io.NopCloser(bytes.NewReader(data)),
+	retries := time.Duration(0)
+	for {
+		response, err := wrapper.client.SendMessage(&webhooks.WebhookPayload{
+			Content: &content,
+			Files: []*webhooks.WebhookFile{
+				&webhooks.WebhookFile{
+					Name:   hash,
+					Reader: io.NopCloser(bytes.NewReader(data)),
+				},
 			},
-		},
-	})
-	if err != nil {
-		return "", err
+		})
+		if err != nil {
+			return "", err
+		}
+		if response.MessageID != "" {
+			return response.MessageID, nil
+		}
+		retries++
+		time.Sleep(time.Second * 1 * retries)
 	}
-	return response.MessageID, nil
 }
