@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"datbox/network"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -152,4 +153,10 @@ func endTransfer(channel chan TransferEvent, err error) {
 		Done: true,
 		Err:  err,
 	}
+}
+
+func randomId() string {
+	id := make([]byte, 4)
+	rand.Read(id)
+	return hex.EncodeToString(id)
 }

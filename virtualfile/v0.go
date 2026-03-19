@@ -175,8 +175,9 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	delete(header.Fields, "size")
 
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
-	log.Printf("Starting upload of %s\n", path)
-	log.Printf("Chunks (pre-gzip): %d\n", int(estimatedChunks))
+	uploadId := randomId()
+	log.Printf("(%s) Starting upload of %s\n", uploadId, path)
+	log.Printf("(%s) Chunks (pre-gzip): %d\n", uploadId, int(estimatedChunks))
 
 	// Piggyback file checksum
 	hasher := md5.New()
@@ -208,7 +209,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 			big.NewInt(int64(parsed)).FillBytes(f.octoBuf)
 			f.file.Write(f.octoBuf)
 			f.chunks++
-			fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
+			log.Printf("(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
 			return nil
 		}
 
@@ -279,7 +280,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
-	log.Printf("Finished upload of %s\n", path)
+	log.Printf("(%s) Uploaded", uploadId)
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
@@ -363,12 +364,13 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		return
 	}
 
-	log.Printf("Starting download of %s", f.Path)
+	downloadId := randomId()
+	log.Printf("(%s) Starting download of %s", downloadId, f.RelPath)
 
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
 	chunks := 0
-	log.Printf("File has size %d bytes. Chunks: %d", f.Size(), estimatedChunks)
+	log.Printf("(%s) %d bytes, %d chunks", downloadId, f.Size(), estimatedChunks)
 
 	pipeReader, pipeWriter := io.Pipe()
 
@@ -437,7 +439,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 			return
 		}
 		chunks++
-		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
+		log.Printf("(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
 	}
 	pipeWriter.Close()
 	// Wait for gzip to be done
@@ -458,6 +460,6 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("Finished download of %s\n", f.Path)
+	log.Printf("(%s) Downloaded", downloadId)
 	endTransfer(channel, nil)
 }

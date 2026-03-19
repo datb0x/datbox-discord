@@ -183,8 +183,9 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	// Setup variables
 	buf := make([]byte, FileChunkSize)
 	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
-	log.Printf("Starting upload of %s\n", path)
-	log.Printf("Chunks: %d\n", int(estimatedChunks))
+	uploadId := randomId()
+	log.Printf("(%s) Starting upload of %s\n", uploadId, path)
+	log.Printf("(%s) Chunks: %d\n", uploadId, int(estimatedChunks))
 	header.Fields["chunks"] = fmt.Sprint(estimatedChunks)
 
 	// Piggyback file checksum
@@ -213,7 +214,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 			return
 		}
 		f.chunks++
-		fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
+		log.Printf("(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
 		big.NewInt(*id).FillBytes(f.octoBuf)
 		f.file.Write(f.octoBuf)
 	}
@@ -299,7 +300,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
-	log.Printf("Finished upload of %s\n", path)
+	log.Printf("(%s) Uploaded", uploadId)
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
@@ -353,7 +354,8 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 	}
 	defer writer.Close()
 
-	log.Printf("Starting download of %s", f.Path)
+	downloadId := randomId()
+	log.Printf("(%s) Starting download of %s", downloadId, f.Path)
 
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
@@ -362,7 +364,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 	}
 	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
 	chunks := 0
-	log.Printf("File has size %d bytes. Chunks: %d", f.Size(), estimatedChunks)
+	log.Printf("(%s) %d bytes, %d chunks", downloadId, f.Size(), estimatedChunks)
 
 	var data []byte
 	totalBytes := 0
@@ -379,7 +381,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		writer.Write(data)
 		totalBytes += len(data)
 		chunks++
-		fmt.Printf("\rDownloaded chunks: %d / %d", chunks, estimatedChunks)
+		fmt.Printf("(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
 		channel <- TransferEvent{
 			Current: int64(totalBytes),
 			Total:   f.Size(),
@@ -396,6 +398,6 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("Finished download of %s\n", f.Path)
+	log.Printf("(%s) Downloaded", downloadId, f.Path)
 	endTransfer(channel, nil)
 }
