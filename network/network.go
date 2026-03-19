@@ -1,9 +1,6 @@
 package network
 
 import (
-	"bytes"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -18,9 +15,10 @@ type DatboxNetwork struct {
 	channelId string
 	session   *discordgo.Session
 	channel   *discordgo.Channel
+	Uploader  *ConcurrentUploader
 }
 
-func NewNetwork(token string, channelId string) (*DatboxNetwork, error) {
+func NewNetwork(token string, channelId string, concurrency int) (*DatboxNetwork, error) {
 	network := new(DatboxNetwork)
 	network.channelId = channelId
 	session, err := discordgo.New("Bot " + token)
@@ -37,6 +35,10 @@ func NewNetwork(token string, channelId string) (*DatboxNetwork, error) {
 	if network.channel.Type != discordgo.ChannelTypeGuildText {
 		return network, errors.New("Channel is not guild-text")
 	}
+	network.Uploader, err = NewConcurrentUploader(network, concurrency)
+	if err != nil {
+		return network, err
+	}
 	return network, nil
 }
 
@@ -48,22 +50,8 @@ func (network *DatboxNetwork) SendMessage(header *DatboxHeader) error {
 	return nil
 }
 
-func (network *DatboxNetwork) SendAttachment(data []byte, header *DatboxHeader) (string, error) {
-	hasher := md5.New()
-	hasher.Write(data)
-	hash := hex.EncodeToString(hasher.Sum(nil))
-	messageSend := discordgo.MessageSend{
-		Content: header.String(),
-		Files: []*discordgo.File{{
-			Name:   hash,
-			Reader: bytes.NewReader(data),
-		}},
-	}
-	message, err := network.session.ChannelMessageSendComplex(network.channelId, &messageSend)
-	if err != nil {
-		return "", err
-	}
-	return message.ID, nil
+func (network *DatboxNetwork) SendAttachment(data []byte, content string) (string, error) {
+	return network.Uploader.SendAttachment(data, content, true)
 }
 
 func (network *DatboxNetwork) FetchAttachment(id string) ([]byte, error) {
@@ -109,6 +97,7 @@ func (network *DatboxNetwork) DeleteMessages(ids []string) {
 }
 
 func (network *DatboxNetwork) FetchLastMessage() (*discordgo.Message, error) {
+	log.Printf("Fetching last message from channel %s", network.channelId)
 	messages, err := network.session.ChannelMessages(network.channelId, 1, "", "", "")
 	if err != nil {
 		return nil, err

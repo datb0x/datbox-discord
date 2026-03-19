@@ -5,6 +5,7 @@ import (
 	"compress/flate"
 	"crypto/rand"
 	"datbox/network"
+	"datbox/structs"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -199,8 +200,30 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		return
 	}
 	defer input.Close()
+
+	futures := structs.NewQueue[structs.Future[int64]](f.network.Uploader.Concurrency)
+	readBytes := make(chan int, f.network.Uploader.Concurrency)
 	totalBytes := int64(0)
 	index := 0
+
+	dequeueFuture := func() {
+		future := futures.Dequeue()
+		id, err := future.Await()
+		if err != nil {
+			endTransfer(channel, err)
+			return
+		}
+		f.chunks++
+		fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
+		big.NewInt(*id).FillBytes(f.octoBuf)
+		f.file.Write(f.octoBuf)
+		totalBytes += int64(<-readBytes)
+		channel <- TransferEvent{
+			Current: totalBytes,
+			Total:   stat.Size(),
+		}
+	}
+
 	for {
 		read, err := ReadFill(input, buf)
 		if err != nil && err != io.EOF {
@@ -235,28 +258,31 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		}
 
 		// Send to Discord
+		for futures.IsFull() {
+			dequeueFuture()
+		}
 		header.Fields["index"] = fmt.Sprint(index)
+		headerStr := header.String()
 		index++
-		id, err := f.network.SendAttachment(data, header)
-		if err != nil {
-			endTransfer(channel, err)
-			return
-		}
-		parsed, err := strconv.ParseUint(id, 10, 64)
-		f.chunks++
-		fmt.Printf("\rUploaded chunks: %d / %d", f.chunks, estimatedChunks)
-		big.NewInt(int64(parsed)).FillBytes(f.octoBuf)
-		f.file.Write(f.octoBuf)
+		futures.Enqueue(structs.NewFuture(func() (int64, error) {
+			id, err := f.network.Uploader.SendAttachment(data, headerStr, false)
+			if err != nil {
+				return 0, err
+			}
+			parsed, err := strconv.ParseUint(id, 10, 64)
+			readBytes <- read
+			return int64(parsed), err
+		}), false)
 
-		totalBytes += int64(read)
-		channel <- TransferEvent{
-			Current: totalBytes,
-			Total:   stat.Size(),
-		}
 		if read != len(buf) {
 			break
 		}
 	}
+
+	for !futures.IsEmpty() {
+		dequeueFuture()
+	}
+
 	fmt.Println()
 
 	// Write separator

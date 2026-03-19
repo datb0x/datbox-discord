@@ -279,7 +279,7 @@ func (fs *DatboxFileSystem) sendFileSystem(packed []byte, hash string) (string, 
 		} else {
 			data = buf[:read]
 		}
-		msgID, err := fs.network.SendAttachment(data, header)
+		msgID, err := fs.network.SendAttachment(data, header.String())
 		if err != nil {
 			return "", err
 		}
@@ -507,7 +507,7 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 					continue
 				}
 				switch header.Action {
-				case network.ActionBegin:
+				/*case network.ActionBegin:
 					if fs.exists(header.Fields["path"]) {
 						log.Printf("%s already exists locally. Overwrite with remote version? [y/n]", header.Fields["path"])
 						var ans string
@@ -558,7 +558,7 @@ func (fs *DatboxFileSystem) syncIfNeeded() error {
 					if err != nil {
 						return err
 					}
-					file.WriteMsgID(parsed)
+					file.WriteMsgID(parsed)*/
 				case network.ActionRemove:
 					fs.Remove(header.Fields["path"], true)
 				}

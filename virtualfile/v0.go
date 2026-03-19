@@ -197,7 +197,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		upload := func(length int) error {
 			header.Fields["index"] = fmt.Sprint(index)
 			index++
-			id, err := f.network.SendAttachment(chunkBuf[:length], header)
+			id, err := f.network.SendAttachment(chunkBuf[:length], header.String())
 			if err != nil {
 				return err
 			}

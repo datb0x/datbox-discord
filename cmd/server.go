@@ -45,7 +45,7 @@ var (
 			if err := config.Save(); err != nil {
 				log.Fatalln(err)
 			}
-			network, err := network.NewNetwork(config.Raw.Token, config.Raw.ChannelId)
+			network, err := network.NewNetwork(config.Raw.Token, config.Raw.ChannelId, config.Raw.Concurrency)
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -86,7 +86,7 @@ func init() {
 
 	serverCmd.Flags().StringVarP(&channelId, "channel", "c", "", "ID of the text channel where chunks will be stored")
 	serverCmd.Flags().StringVarP(&configPath, "config", "C", configFilePath, "Local path to config file")
-	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 10, "Maximum number upload and download jobs that can run in parallel")
+	serverCmd.Flags().IntVarP(&concurrency, "concurrency", "m", 5, "Maximum number upload and download jobs that can run in parallel")
 	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", configDir, "Directory where data should be stored")
 	serverCmd.Flags().BoolVarP(&encrypted, "encrypted", "e", false, "Use an extra password to encrypt the entire file system on Discord")
 	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use config instead")
