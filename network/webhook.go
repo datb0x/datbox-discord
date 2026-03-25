@@ -120,7 +120,7 @@ func (uploader *ConcurrentUploader) SendAttachment(data []byte, content string, 
 		response, err := wrapper.client.SendMessage(&webhooks.WebhookPayload{
 			Content: &content,
 			Files: []*webhooks.WebhookFile{
-				&webhooks.WebhookFile{
+				{
 					Name:   hash,
 					Reader: io.NopCloser(bytes.NewReader(data)),
 				},
