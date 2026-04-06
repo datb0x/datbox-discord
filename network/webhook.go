@@ -115,6 +115,7 @@ func (uploader *ConcurrentUploader) SendAttachment(data []byte, content string, 
 		}
 	}
 	defer wrapper.mu.Unlock()
+	errRetries := 5
 	retries := time.Duration(0)
 	for {
 		response, err := wrapper.client.SendMessage(&webhooks.WebhookPayload{
@@ -127,12 +128,15 @@ func (uploader *ConcurrentUploader) SendAttachment(data []byte, content string, 
 			},
 		})
 		if err != nil {
-			return "", err
-		}
-		if response.MessageID != "" {
+			if errRetries > 0 {
+				errRetries--
+			} else {
+				return "", err
+			}
+		} else if response.MessageID != "" {
 			return response.MessageID, nil
 		}
 		retries++
-		time.Sleep(time.Second * 1 * retries)
+		time.Sleep(time.Second * retries)
 	}
 }
