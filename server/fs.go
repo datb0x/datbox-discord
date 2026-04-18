@@ -594,9 +594,9 @@ Sync:
 func (fs *DatboxFileSystem) Mkdir(virtualPath string, all ...bool) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if len(all) == 1 && all[0] {
-		return os.MkdirAll(virtualPath, 0755)
+		return os.MkdirAll(path.Join(fs.root, virtualPath), 0755)
 	} else {
-		return os.Mkdir(virtualPath, 0755)
+		return os.Mkdir(path.Join(fs.root, virtualPath), 0755)
 	}
 }
 
