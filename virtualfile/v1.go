@@ -214,7 +214,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 			return
 		}
 		f.chunks++
-		log.Printf("(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
+		fmt.Printf("\r(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
 		big.NewInt(*id).FillBytes(f.octoBuf)
 		f.file.Write(f.octoBuf)
 	}
@@ -300,7 +300,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
-	log.Printf("(%s) Uploaded", uploadId)
+	log.Printf("(%s) Finished upload of %s", uploadId, path)
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
@@ -381,7 +381,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		writer.Write(data)
 		totalBytes += len(data)
 		chunks++
-		log.Printf("(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
+		fmt.Printf("\r(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
 		channel <- TransferEvent{
 			Current: int64(totalBytes),
 			Total:   f.Size(),
@@ -397,6 +397,6 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("(%s) Downloaded", downloadId)
+	log.Printf("(%s) Finished download of %s", downloadId, path)
 	endTransfer(channel, nil)
 }
