@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/sha256"
+	"datbox/comm"
 	"datbox/network"
 	"datbox/virtualfile"
 	"encoding/binary"
@@ -818,14 +819,24 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 	return fs.saveReference()
 }
 
-func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion byte, logger chan []byte) error {
+type TransferResult struct {
+	StartTime time.Time
+	EndTime   time.Time
+	Size      uint64
+	Chunks    int
+	Checksum  []byte
+}
+
+func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion byte, logger *comm.IPCLogger) (result TransferResult, err error) {
 	virtualPath = fs.sanitize(virtualPath)
 	stat, err := os.Stat(physicalPath)
 	if err != nil {
-		return errors.New("Source file doesn't exist")
+		err = errors.New("Source file doesn't exist")
+		return
 	}
 	if stat.IsDir() {
-		return errors.New("Only file uploads are currently supported")
+		err = errors.New("Only file uploads are currently supported")
+		return
 	}
 
 	stat, err = fs.Stat(virtualPath, true)
@@ -836,30 +847,33 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
 	os.MkdirAll(virtualDir, 0755)
 	if _, err = os.Stat(virtualDir); err != nil {
-		return errors.New("Failed to create directory")
+		err = errors.New("Failed to create directory")
+		return
 	}
 	if _, err = os.Stat(path.Join(fs.root, virtualPath)); err == nil {
-		return errors.New("File already exists in virtual file system")
+		err = errors.New("File already exists in virtual file system")
+		return
 	}
 
-	start := time.Now()
+	result.StartTime = time.Now()
 	var globalPassword []byte
 	if fs.config.Encrypted {
 		globalPassword, err = hex.DecodeString(fs.config.Raw.Password)
 		if err != nil {
-			return err
+			return
 		}
 	}
 	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, fs.network, fileVersion)
 	if err != nil {
-		return err
+		return
 	}
 	err = file.OpenOrCreate()
 	if err != nil {
-		return err
+		return
 	}
 	if !file.WriteMode() {
-		return errors.New("File should be in write mode")
+		err = errors.New("File should be in write mode")
+		return
 	}
 
 	// Defer syncing
@@ -885,43 +899,49 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 		if event.Done {
 			if event.Err != nil {
 				fs.Remove(virtualPath)
-				return event.Err
+				err = event.Err
+				return
 			}
-			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(start).Seconds()))))
+			logger.SendIntermediate(fmt.Appendf(nil, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds())))))
 			break
 		} else {
-			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(start).Seconds()))))
+			logger.SendDiscardable(fmt.Appendf(nil, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds())))))
 		}
 	}
 
-	logger <- fmt.Appendf([]byte{2}, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), file.Chunks(), hex.EncodeToString(file.Checksum()))
-	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %s", humanize.RelTime(start, time.Now(), "", ""))
+	result.EndTime = time.Now()
+	result.Size = uint64(file.Size())
+	result.Chunks = file.Chunks()
+	result.Checksum = file.Checksum()
 
-	return nil
+	return
 }
 
-func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger chan []byte) error {
+func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger *comm.IPCLogger) (result TransferResult, err error) {
 	virtualPath = fs.sanitize(virtualPath)
-	if _, err := os.Stat(physicalPath); err == nil {
-		return errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
+	if _, err = os.Stat(physicalPath); err == nil {
+		err = errors.New("Physical path " + physicalPath + " already exists. Not overwriting")
+		return
 	}
-	_, err := fs.Stat(virtualPath, true)
+	_, err = fs.Stat(virtualPath, true)
 	if err != nil {
-		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
+		err = errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
+		return
 	}
 
-	start := time.Now()
+	result.StartTime = time.Now()
 	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
 	if err != nil {
-		return err
+		return
 	}
 	defer file.Close()
 	err = file.OpenOrCreate()
 	if err != nil {
-		return err
+		return
 	}
 	if file.WriteMode() {
-		return errors.New("File should not be in write mode")
+		err = errors.New("File should not be in write mode")
+		return
 	}
 	eventSignal := make(chan virtualfile.TransferEvent)
 	go file.DownloadTo(physicalPath, eventSignal)
@@ -929,17 +949,15 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger ch
 		event := <-eventSignal
 		if event.Done {
 			if event.Err != nil {
-				return event.Err
+				err = event.Err
+				return
 			}
-			logger <- fmt.Appendf([]byte{2}, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(start).Seconds()))))
+			logger.SendIntermediate(fmt.Appendf(nil, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds())))))
 			break
 		} else {
-			logger <- fmt.Appendf([]byte{3}, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(start).Seconds()))))
+			logger.SendDiscardable(fmt.Appendf(nil, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds())))))
 		}
 	}
 
-	logger <- fmt.Appendf([]byte{2}, "\nDownloaded to %s successfully", physicalPath)
-	logger <- fmt.Appendf([]byte{0}, "\nTime elapsed: %s", humanize.RelTime(start, time.Now(), "", ""))
-
-	return nil
+	return
 }

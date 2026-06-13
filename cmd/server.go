@@ -4,6 +4,7 @@ import (
 	"datbox/comm"
 	"datbox/network"
 	"datbox/server"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"path"
@@ -105,29 +106,32 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 	if err != nil {
 		return
 	}
-	logger := createLogger(server, int(id))
+	logger := comm.NewLogger(server, int(id))
 	switch message.MsgType {
 	case MSG_TYPE_UPLOAD:
 		{
 			fileVersion, err := reader.ReadByte()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			// Logger automatically succeeds if no error
-			err = fs.Upload(physicalPath, virtualPath, fileVersion, logger)
+			result, err := fs.Upload(physicalPath, virtualPath, fileVersion, logger)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
+			} else {
+				logger.SendIntermediate(fmt.Appendf(nil, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)))
+				logger.SendSuccess(fmt.Appendf(nil, "\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
 			}
 			break
 		}
@@ -135,18 +139,21 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			// Logger automatically succeeds if no error
-			err = fs.Download(virtualPath, physicalPath, logger)
+			result, err := fs.Download(virtualPath, physicalPath, logger)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
+			} else {
+				logger.SendIntermediate(fmt.Appendf(nil, "\nDownloaded to %s successfully", physicalPath))
+				logger.SendSuccess(fmt.Appendf(nil, "\nTime elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", "")))
 			}
 			break
 		}
@@ -154,12 +161,12 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			long, err := reader.ReadByte()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			human, err := reader.ReadByte()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
@@ -168,7 +175,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			entries, err := fs.ReadDir(virtualPath, long == 1)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			var body strings.Builder
@@ -216,26 +223,26 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 					}
 				}
 			}
-			logger <- append([]byte{0}, []byte(body.String())...)
+			logger.SendSuccess([]byte(body.String()))
 			break
 		}
 	case MSG_TYPE_MOVE:
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			err = fs.Move(src, dest)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 			} else {
-				logger <- []byte{0}
+				logger.SendSuccess([]byte{})
 			}
 			break
 		}
@@ -243,7 +250,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -256,9 +263,9 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Remove(virtualPath, recursive == 1, remote == 1)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 			} else {
-				logger <- []byte{0}
+				logger.SendSuccess([]byte{})
 			}
 			break
 		}
@@ -266,7 +273,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -275,9 +282,9 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Mkdir(virtualPath, recursive == 1)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 			} else {
-				logger <- []byte{0}
+				logger.SendSuccess([]byte{})
 			}
 			break
 		}
@@ -285,19 +292,19 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 				return
 			}
 			err = fs.Copy(src, dest)
 			if err != nil {
-				logger <- append([]byte{1}, []byte(err.Error())...)
+				logger.SendFailure([]byte(err.Error()))
 			} else {
-				logger <- []byte{0}
+				logger.SendSuccess([]byte{})
 			}
 			break
 		}
