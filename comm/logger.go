@@ -1,16 +1,14 @@
 package comm
 
 import (
-	"sync"
-
 	ipc "github.com/james-barrow/golang-ipc"
 )
 
 const (
 	LogHeaderSuccess      = 0
 	LogHeaderFailure      = 1
-	LogHeaderDiscardable  = 2
 	LogHeaderIntermediate = 3
+	LogHeaderRaw          = 4
 )
 
 type IPCLogger struct {
@@ -27,26 +25,11 @@ func NewLogger(server *ipc.Server, id int) *IPCLogger {
 	}
 
 	go func() {
-		mutex := sync.Mutex{}
 		for {
 			message := <-logger.messages
-			switch message[0] {
-			case LogHeaderSuccess, LogHeaderFailure:
-				mutex.Lock()
-				server.Write(id, message)
-				mutex.Unlock()
-				return
-			case LogHeaderDiscardable:
-				go func() {
-					if mutex.TryLock() {
-						logger.server.Write(id, message)
-						mutex.Unlock()
-					}
-				}()
-			case LogHeaderIntermediate:
-				mutex.Lock()
-				server.Write(id, message)
-				mutex.Unlock()
+			server.Write(id, message)
+			if message[0] == LogHeaderSuccess || message[0] == LogHeaderFailure {
+				break
 			}
 		}
 	}()
@@ -66,10 +49,10 @@ func (logger *IPCLogger) SendFailure(message string) {
 	go logger.sendData(LogHeaderFailure, []byte(message))
 }
 
-func (logger *IPCLogger) SendDiscardable(message string) {
-	go logger.sendData(LogHeaderDiscardable, []byte(message))
-}
-
 func (logger *IPCLogger) SendIntermediate(message string) {
 	go logger.sendData(LogHeaderIntermediate, []byte(message))
+}
+
+func (logger *IPCLogger) SendRaw(data []byte) {
+	logger.sendData(LogHeaderRaw, data)
 }

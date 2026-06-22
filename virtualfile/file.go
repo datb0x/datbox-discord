@@ -46,7 +46,7 @@ type VirtualFile interface {
 
 	GetNextChunk() ([]byte, error)
 	GetNextChunkRaw() ([]byte, error)
-	DownloadTo(path string, channel chan TransferEvent)
+	Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 }
 
 func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {

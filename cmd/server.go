@@ -11,6 +11,7 @@ import (
 	"log"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adrg/xdg"
@@ -31,8 +32,8 @@ const (
 )
 
 type Uploader struct {
-	writer    *io.PipeWriter
-	messenger chan string
+	writer  *io.PipeWriter
+	message *string
 }
 
 var uploaders = map[int32]*Uploader{}
@@ -63,7 +64,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
-			server, err := ipc.StartServer("datbox", nil)
+			server, err := ipc.StartServer("datbox", &ipc.ServerConfig{MaxMsgSize: 1024*1024*5 + 1})
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -100,16 +101,6 @@ func init() {
 	serverCmd.Flags().StringVarP(&dataDir, "data-dir", "d", configDir, "Directory where data should be stored")
 	serverCmd.Flags().BoolVarP(&encrypted, "encrypted", "e", false, "Use an extra password to encrypt the entire file system on Discord")
 	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use config instead")
-}
-
-func consumeMessenger(messenger chan string) (message string) {
-	for {
-		select {
-		case message = <-messenger:
-		default:
-			return
-		}
-	}
 }
 
 func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFileSystem) {
@@ -151,23 +142,23 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				return
 			}
 			reader, writer := io.Pipe()
-			messenger := make(chan string)
+			var message string
 			uploaders[id] = &Uploader{
-				writer:    writer,
-				messenger: messenger,
+				writer:  writer,
+				message: &message,
 			}
 			logger.SendSuccess("")
 			// Put reader in goroutine to upload
 			go func() {
 				log.Printf("(%d) Starting upload to %s\n", id, virtualPath)
-				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, messenger)
+				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, &message)
 				if err != nil {
 					log.Printf("(%d) Failed upload to %s: %v", id, virtualPath, err)
 					logger.SendFailure(err.Error())
 					fs.Remove(virtualPath, false, true)
 				} else {
 					log.Printf("(%d) Finished upload to %s", id, virtualPath)
-					logger.SendIntermediate(consumeMessenger(messenger))
+					logger.SendIntermediate(message)
 					logger.SendIntermediate(fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)))
 					logger.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
 				}
@@ -201,7 +192,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 						uploader.writer.Close()
 						// The main goroutine will send success
 					} else {
-						logger.SendSuccess(consumeMessenger(uploader.messenger))
+						logger.SendSuccess(*uploader.message)
 					}
 				case UploadHeaderAbort:
 					uploader.writer.CloseWithError(errors.New("Client aborted"))
@@ -219,18 +210,34 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 				logger.SendFailure(err.Error())
 				return
 			}
-			physicalPath, err := reader.ReadUtf8()
-			if err != nil {
-				logger.SendFailure(err.Error())
-				return
-			}
-			// Logger automatically succeeds if no error
-			result, err := fs.Download(virtualPath, physicalPath, logger)
-			if err != nil {
-				logger.SendFailure(err.Error())
-			} else {
-				logger.SendIntermediate(fmt.Sprintf("\nDownloaded to %s successfully", physicalPath))
-				logger.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", "")))
+			reader, writer := io.Pipe()
+			mutex := sync.Mutex{}
+			mutex.Lock()
+			defer mutex.Unlock()
+			var message string
+			go func() {
+				log.Printf("(%d) Starting download of %s\n", id, virtualPath)
+				result, err := fs.Download(writer, virtualPath, &message)
+				mutex.Lock()
+				defer mutex.Unlock()
+				if err != nil {
+					log.Printf("(%d) Failed download of %s: %v", id, virtualPath, err)
+					logger.SendFailure(err.Error())
+				} else {
+					log.Printf("(%d) Finished download of %s", id, virtualPath)
+					logger.SendIntermediate(fmt.Sprintf("\nDownloaded %s successfully", virtualPath))
+					logger.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", "")))
+				}
+			}()
+			data := make([]byte, 1024*1024*5)
+			for {
+				read, err := reader.Read(data)
+				if err != nil {
+					// The goroutine above this will handle the error
+					break
+				}
+				logger.SendRaw(data[:read])
+				logger.SendIntermediate(message)
 			}
 			break
 		}

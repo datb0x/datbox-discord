@@ -336,37 +336,28 @@ func (f *V0File) GetNextChunkRaw() ([]byte, error) {
 	return f.network.FetchAttachment(strconv.FormatUint(id, 10))
 }
 
-func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
+func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent) {
 	if f.file == nil {
 		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
-	writer, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	defer writer.Close()
+	defer fileWriter.Close()
 	stat, err := os.Stat(f.Path)
 	if err != nil {
 		endTransfer(channel, err)
 		return
 	}
 
-	downloadId := randomId()
-	log.Printf("(%s) Starting download of %s", downloadId, f.RelPath)
-
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
 	chunks := 0
-	log.Printf("(%s) %d bytes, %d chunks", downloadId, f.Size(), estimatedChunks)
 
 	pipeReader, pipeWriter := io.Pipe()
 
 	// Put gzip decompressor in goroutine
 	gzipSignal := make(chan error)
+	totalBytes := 0
 	go func() {
-		totalBytes := 0
 		buf := make([]byte, 4096)
 		gzipReader, err := gzip.NewReader(bufio.NewReaderSize(pipeReader, FileChunkSize))
 		if err != nil {
@@ -388,7 +379,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 				Current: int64(totalBytes),
 				Total:   f.Size(),
 			}
-			_, err = writer.Write(buf[:read])
+			_, err = fileWriter.Write(buf[:read])
 			if err != nil {
 				gzipSignal <- err
 				return
@@ -428,7 +419,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 			return
 		}
 		chunks++
-		fmt.Printf("\r(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
+		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", f.RelPath, chunks, estimatedChunks, totalBytes, f.size)
 	}
 	fmt.Println()
 	pipeWriter.Close()
@@ -449,6 +440,5 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("(%s) Finished download of %s", downloadId, path)
 	endTransfer(channel, nil)
 }

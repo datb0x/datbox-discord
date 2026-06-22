@@ -3,7 +3,8 @@ package cmd
 import (
 	"datbox/comm"
 	"log"
-	"path/filepath"
+	"os"
+	"path"
 
 	"github.com/spf13/cobra"
 )
@@ -19,20 +20,31 @@ var (
 				log.Fatalln(err)
 			}
 			defer client.Close()
-			absPhys, err := filepath.Abs(args[1])
-			if err != nil {
-				log.Fatalln(err)
+			stat, err := os.Stat(args[1])
+			if err == nil {
+				if !stat.IsDir() {
+					log.Fatalf("Physical path %s already exists", args[1])
+				} else {
+					args[1] = path.Join(args[1], path.Base(args[0]))
+					_, err := os.Stat(args[1])
+					if err == nil {
+						log.Fatalf("Physical path %s already exists", args[1])
+					}
+				}
 			}
+			file, err := os.Create(args[1])
+			if err != nil {
+				log.Fatalf("Failed to open file with create and write flag: %v", err)
+			}
+			defer file.Close()
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
 			writer.WriteUtf8(args[0])
-			writer.WriteUtf8(absPhys)
 			err = client.Write(MSG_TYPE_DOWNLOAD, writer.Data)
 			if err != nil {
-				log.Println("Failed to write data to ipc")
-				log.Fatalln(err)
+				log.Fatalf("Failed to write data to ipc: %v", err)
 			}
-			err = comm.ReadUntilEnd(client, id)
+			err = comm.ReadUntilEndWithRaw(client, id, file)
 			if err != nil {
 				log.Fatalln(err)
 			}

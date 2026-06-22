@@ -329,20 +329,12 @@ func (f *V1File) GetNextChunk() ([]byte, error) {
 	return io.ReadAll(flate.NewReader(bytes.NewReader(data)))
 }
 
-func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
+func (f *V1File) Download(fileWriter io.WriteCloser, channel chan TransferEvent) {
 	if f.file == nil {
 		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
-	writer, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	defer writer.Close()
-
-	downloadId := randomId()
-	log.Printf("(%s) Starting download of %s", downloadId, f.Path)
+	defer fileWriter.Close()
 
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
@@ -351,7 +343,6 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 	}
 	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
 	chunks := 0
-	log.Printf("(%s) %d bytes, %d chunks", downloadId, f.Size(), estimatedChunks)
 
 	var data []byte
 	totalBytes := 0
@@ -365,10 +356,10 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 			return
 		}
 		hasher.Write(data)
-		writer.Write(data)
+		fileWriter.Write(data)
 		totalBytes += len(data)
 		chunks++
-		fmt.Printf("\r(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
+		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", f.RelPath, chunks, estimatedChunks, totalBytes, f.size)
 		channel <- TransferEvent{
 			Current: int64(totalBytes),
 			Total:   f.Size(),
@@ -385,6 +376,5 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
 		return
 	}
-	log.Printf("(%s) Finished download of %s", downloadId, path)
 	endTransfer(channel, nil)
 }

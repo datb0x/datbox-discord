@@ -2,6 +2,7 @@ package comm
 
 import (
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"strings"
 
@@ -73,6 +74,38 @@ func ReadUntilEnd(client *ipc.Client, id int32) error {
 		status := message.Data[0]
 		if status == 0 || status == 1 {
 			break
+		}
+	}
+	return nil
+}
+
+func ReadUntilEndWithRaw(client *ipc.Client, id int32, writer io.Writer) error {
+	for {
+		message, err := client.Read()
+		if err != nil {
+			return err
+		}
+		if message.MsgType != int(id) {
+			continue
+		}
+		status := message.Data[0]
+		if status == 4 {
+			_, err := writer.Write(message.Data[1:])
+			if err != nil {
+				return err
+			}
+		} else {
+			str := string(message.Data[1:])
+			if str != "" {
+				if strings.ContainsAny(str, "\r") {
+					fmt.Print(str)
+				} else {
+					fmt.Println(str)
+				}
+			}
+			if status == 0 || status == 1 {
+				break
+			}
 		}
 	}
 	return nil
