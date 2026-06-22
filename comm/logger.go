@@ -41,18 +41,34 @@ func (logger *IPCLogger) sendData(header byte, data []byte) {
 	logger.messages <- append([]byte{header}, data...)
 }
 
-func (logger *IPCLogger) SendSuccess(message string) {
-	go logger.sendData(LogHeaderSuccess, []byte(message))
+func (logger *IPCLogger) SendSuccess(message string, blocking ...bool) {
+	if len(blocking) > 0 && blocking[0] {
+		logger.sendData(LogHeaderSuccess, []byte(message))
+	} else {
+		go logger.sendData(LogHeaderSuccess, []byte(message))
+	}
 }
 
-func (logger *IPCLogger) SendFailure(message string) {
-	go logger.sendData(LogHeaderFailure, []byte(message))
+func (logger *IPCLogger) SendFailure(message string, blocking ...bool) {
+	if len(blocking) > 0 && blocking[0] {
+		logger.sendData(LogHeaderFailure, []byte(message))
+	} else {
+		go logger.sendData(LogHeaderFailure, []byte(message))
+	}
 }
 
-func (logger *IPCLogger) SendIntermediate(message string) {
-	go logger.sendData(LogHeaderIntermediate, []byte(message))
+func (logger *IPCLogger) SendIntermediate(message string, blocking ...bool) {
+	if len(blocking) > 0 && blocking[0] {
+		logger.sendData(LogHeaderIntermediate, []byte(message))
+	} else {
+		go logger.sendData(LogHeaderIntermediate, []byte(message))
+	}
 }
 
-func (logger *IPCLogger) SendRaw(data []byte) {
-	logger.sendData(LogHeaderRaw, data)
+func (logger *IPCLogger) SendRaw(data []byte, blocking ...bool) {
+	if len(blocking) > 0 && blocking[0] {
+		logger.sendData(LogHeaderRaw, data)
+	} else {
+		go logger.sendData(LogHeaderRaw, data)
+	}
 }

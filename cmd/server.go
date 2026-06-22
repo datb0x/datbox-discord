@@ -29,6 +29,7 @@ const (
 	MSG_TYPE_REMOVE       = 5
 	MSG_TYPE_MKDIR        = 6
 	MSG_TYPE_COPY         = 7
+	MSG_TYPE_INFO         = 9
 )
 
 type Uploader struct {
@@ -36,7 +37,10 @@ type Uploader struct {
 	message *string
 }
 
-var uploaders = map[int32]*Uploader{}
+var (
+	uploaders = map[int32]*Uploader{}
+	startTime time.Time
+)
 
 var (
 	channelId   string
@@ -68,6 +72,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
+			startTime = time.Now()
 			for {
 				message, err := server.Read()
 				if err != nil {
@@ -106,10 +111,6 @@ func init() {
 func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFileSystem) {
 	if message.Err != nil {
 		log.Println(message.Err)
-		return
-	}
-	if message.MsgType <= 0 || message.MsgType > 8 {
-		log.Printf("Unknown message type %d\n", message.MsgType)
 		return
 	}
 	reader := comm.NewReader(message)
@@ -236,7 +237,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 					// The goroutine above this will handle the error
 					break
 				}
-				logger.SendRaw(data[:read])
+				logger.SendRaw(data[:read], true)
 				logger.SendIntermediate(message)
 			}
 			break
@@ -392,6 +393,16 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			break
 		}
+	case MSG_TYPE_INFO:
+		{
+			logger.SendIntermediate(fmt.Sprintf("Start time: %s", startTime.Format("2006-01-02 15:04:05")), true)
+			logger.SendIntermediate(fmt.Sprintf("Uptime: %s", humanize.RelTime(startTime, time.Now(), "", "")), true)
+			logger.SendSuccess(fs.Info())
+			break
+		}
+	default:
+		log.Printf("Unknown message type %d\n", message.MsgType)
+		logger.SendFailure(fmt.Sprintf("Unknown message type %d\n", message.MsgType))
 	}
 }
 

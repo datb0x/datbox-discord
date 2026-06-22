@@ -592,6 +592,38 @@ Sync:
 	return nil
 }
 
+func (fs *DatboxFileSystem) Info() string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Root: %s", fs.root)
+	fmt.Fprintf(&builder, "\nEncrypted: %t", fs.config.Encrypted)
+
+	var totalFiles, totalBytes uint64
+	var recurse func(virtualPath string)
+	recurse = func(virtualPath string) {
+		stat, err := fs.Stat(virtualPath, false)
+		if err != nil {
+			return
+		}
+		if stat.IsDir() {
+			entries, err := fs.ReadDir(virtualPath)
+			if err != nil {
+				return
+			}
+			for _, entry := range entries {
+				recurse(path.Join(virtualPath, entry.Name))
+			}
+		} else {
+			totalFiles++
+			totalBytes += uint64(stat.Size())
+		}
+	}
+	recurse("/")
+
+	fmt.Fprintf(&builder, "\nFiles: %d", totalFiles)
+	fmt.Fprintf(&builder, "\nStored: %s (%d bytes)", humanize.Bytes(totalBytes), totalBytes)
+	return builder.String()
+}
+
 func (fs *DatboxFileSystem) Mkdir(virtualPath string, all ...bool) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if len(all) == 1 && all[0] {

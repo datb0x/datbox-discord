@@ -26,4 +26,5 @@ func init() {
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(mkdirCmd)
 	rootCmd.AddCommand(copyCmd)
+	rootCmd.AddCommand(infoCmd)
 }
