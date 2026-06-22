@@ -38,7 +38,7 @@ type VirtualFile interface {
 	Write(data []byte) error
 	WriteHeader() error
 	WriteMsgID(id uint64) error
-	UploadFrom(path string, channel chan TransferEvent)
+	Upload(fileReader io.Reader, size int64, channel chan TransferEvent)
 
 	ReadMsgID() (uint64, error)
 	ReadPrevMsgID() (uint64, error)

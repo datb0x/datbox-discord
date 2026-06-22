@@ -130,18 +130,13 @@ func (f *V1File) WriteHeader() error {
 	return nil
 }
 
-func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
+func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferEvent) {
 	if f.file == nil {
 		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 
-	stat, err := os.Stat(path)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	f.size = uint64(stat.Size())
+	f.size = uint64(size)
 
 	// Begin header
 	header := network.NewHeader(network.ActionBegin)
@@ -153,6 +148,7 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// Encrypt password if necessary
 	var filePassword []byte
+	var err error
 	if f.GlobalPassword != nil {
 		filePassword, err = SymmetricEncrypt(f.GlobalPassword, f.Password)
 		if err != nil {
@@ -182,9 +178,8 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// Setup variables
 	buf := make([]byte, FileChunkSize)
-	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
+	estimatedChunks := int(math.Ceil(float64(size) / FileChunkSize))
 	uploadId := randomId()
-	log.Printf("(%s) Starting upload of %s\n", uploadId, path)
 	log.Printf("(%s) Chunks: %d\n", uploadId, int(estimatedChunks))
 	header.Fields["chunks"] = fmt.Sprint(estimatedChunks)
 
@@ -194,13 +189,6 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 		endTransfer(channel, err)
 		return
 	}
-
-	input, err := os.Open(path)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	defer input.Close()
 
 	futures := structs.NewQueue[structs.Future[int64]](f.network.Uploader.Concurrency)
 	readBytes := make(chan int, f.network.Uploader.Concurrency)
@@ -221,20 +209,20 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 
 	// Progress updater
 	go func() {
-		size := stat.Size()
+		total := size
 		totalBytes := int64(0)
-		for totalBytes < size {
+		for totalBytes < total {
 			read := <-readBytes
 			totalBytes += int64(read)
 			channel <- TransferEvent{
 				Current: totalBytes,
-				Total:   size,
+				Total:   total,
 			}
 		}
 	}()
 
 	for {
-		read, err := ReadFill(input, buf)
+		read, err := ReadFill(fileReader, buf)
 		if err != nil && err != io.EOF {
 			endTransfer(channel, err)
 			return
@@ -300,7 +288,6 @@ func (f *V1File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
-	log.Printf("(%s) Finished upload of %s", uploadId, path)
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
@@ -387,6 +374,7 @@ func (f *V1File) DownloadTo(path string, channel chan TransferEvent) {
 			Total:   f.Size(),
 		}
 	}
+	fmt.Println()
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {

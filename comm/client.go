@@ -63,14 +63,15 @@ func ReadUntilEnd(client *ipc.Client, id int32) error {
 			continue
 		}
 		str := string(message.Data[1:])
-		if strings.ContainsAny(str, "\r") {
-			fmt.Print(str)
-		} else {
-			fmt.Println(str)
+		if str != "" {
+			if strings.ContainsAny(str, "\r") {
+				fmt.Print(str)
+			} else {
+				fmt.Println(str)
+			}
 		}
 		status := message.Data[0]
 		if status == 0 || status == 1 {
-			client.Close()
 			break
 		}
 	}

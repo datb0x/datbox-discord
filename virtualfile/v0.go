@@ -143,19 +143,14 @@ func (f *V0File) WriteMsgID(id uint64) error {
 	return nil
 }
 
-func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
+func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferEvent) {
 	if f.file == nil {
 		endTransfer(channel, errors.New("No file opened"))
 		return
 	}
 
 	buf := make([]byte, 4096)
-	stat, err := os.Stat(path)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	f.size = uint64(stat.Size())
+	f.size = uint64(size)
 
 	// Begin header
 	header := network.NewHeader(network.ActionBegin)
@@ -164,7 +159,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Fields["path"] = f.RelPath
 	header.Fields["version"] = "0"
 	header.Fields["size"] = fmt.Sprint(f.size)
-	err = f.network.SendMessage(header)
+	err := f.network.SendMessage(header)
 	if err != nil {
 		endTransfer(channel, err)
 		return
@@ -174,20 +169,13 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	header.Action = network.ActionFileChunk
 	delete(header.Fields, "size")
 
-	estimatedChunks := int(math.Ceil(float64(stat.Size()) / FileChunkSize))
+	estimatedChunks := int(math.Ceil(float64(size) / FileChunkSize))
 	uploadId := randomId()
-	log.Printf("(%s) Starting upload of %s\n", uploadId, path)
 	log.Printf("(%s) Chunks (pre-gzip): %d\n", uploadId, int(estimatedChunks))
 
 	// Piggyback file checksum
 	hasher := md5.New()
 
-	input, err := os.Open(path)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-	defer input.Close()
 	pipeReader, pipeWriter := io.Pipe()
 	readerSignal := make(chan error)
 	go func() {
@@ -234,7 +222,7 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	gzipWriter := gzip.NewWriter(io.MultiWriter(pipeWriter, hasher))
 	totalBytes := int64(0)
 	for {
-		read, err := input.Read(buf)
+		read, err := fileReader.Read(buf)
 		if err != nil && err != io.EOF {
 			endTransfer(channel, err)
 			return
@@ -258,14 +246,14 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 		totalBytes += int64(read)
 		channel <- TransferEvent{
 			Current: totalBytes,
-			Total:   stat.Size(),
+			Total:   size,
 		}
 	}
 	gzipWriter.Close()
 	pipeWriter.Close()
 	channel <- TransferEvent{
 		Current: totalBytes,
-		Total:   stat.Size(),
+		Total:   size,
 	}
 	err = <-readerSignal
 	if err != nil {
@@ -280,7 +268,6 @@ func (f *V0File) UploadFrom(path string, channel chan TransferEvent) {
 	// Write file checksum at the end
 	f.checksum = hasher.Sum(nil)
 	f.file.Write(f.checksum)
-	log.Printf("(%s) Finished upload of %s", uploadId, path)
 
 	// End header
 	header = network.NewHeader(network.ActionComplete)
@@ -339,6 +326,8 @@ func (f *V0File) GetNextChunk() ([]byte, error) {
 func (f *V0File) GetNextChunkRaw() ([]byte, error) {
 	id, err := f.ReadMsgID()
 	if err != nil {
+		// Rewind on error
+		f.file.Seek(-8, io.SeekCurrent)
 		return nil, err
 	}
 	if id == 0 {
@@ -441,6 +430,7 @@ func (f *V0File) DownloadTo(path string, channel chan TransferEvent) {
 		chunks++
 		fmt.Printf("\r(%s) Downloaded chunks: %d / %d", downloadId, chunks, estimatedChunks)
 	}
+	fmt.Println()
 	pipeWriter.Close()
 	// Wait for gzip to be done
 	err = <-gzipSignal

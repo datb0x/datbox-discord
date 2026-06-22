@@ -18,6 +18,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
+			defer client.Close()
 			absPhys, err := filepath.Abs(args[1])
 			if err != nil {
 				log.Fatalln(err)

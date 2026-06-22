@@ -5,7 +5,9 @@ import (
 	"datbox/network"
 	"datbox/server"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"path"
 	"strings"
@@ -18,14 +20,22 @@ import (
 )
 
 const (
-	MSG_TYPE_UPLOAD   = 1
-	MSG_TYPE_DOWNLOAD = 2
-	MSG_TYPE_LIST     = 3
-	MSG_TYPE_MOVE     = 4
-	MSG_TYPE_REMOVE   = 5
-	MSG_TYPE_MKDIR    = 6
-	MSG_TYPE_COPY     = 7
+	MSG_TYPE_UPLOAD       = 1
+	MSG_TYPE_UPLOAD_CHUNK = 8
+	MSG_TYPE_DOWNLOAD     = 2
+	MSG_TYPE_LIST         = 3
+	MSG_TYPE_MOVE         = 4
+	MSG_TYPE_REMOVE       = 5
+	MSG_TYPE_MKDIR        = 6
+	MSG_TYPE_COPY         = 7
 )
+
+type Uploader struct {
+	writer    *io.PipeWriter
+	messenger chan string
+}
+
+var uploaders = map[int32]*Uploader{}
 
 var (
 	channelId   string
@@ -92,12 +102,22 @@ func init() {
 	serverCmd.Flags().StringVarP(&token, "token", "t", "", "Discord bot token. This option not recommended. Use config instead")
 }
 
+func consumeMessenger(messenger chan string) (message string) {
+	for {
+		select {
+		case message = <-messenger:
+		default:
+			return
+		}
+	}
+}
+
 func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFileSystem) {
 	if message.Err != nil {
 		log.Println(message.Err)
 		return
 	}
-	if message.MsgType <= 0 || message.MsgType > 7 {
+	if message.MsgType <= 0 || message.MsgType > 8 {
 		log.Printf("Unknown message type %d\n", message.MsgType)
 		return
 	}
@@ -112,26 +132,83 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			fileVersion, err := reader.ReadByte()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
-			physicalPath, err := reader.ReadUtf8()
+			fileSize, err := reader.ReadUInt64()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
+				return
+			}
+			fileName, err := reader.ReadUtf8()
+			if err != nil {
+				logger.SendFailure(err.Error())
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
-			// Logger automatically succeeds if no error
-			result, err := fs.Upload(physicalPath, virtualPath, fileVersion, logger)
-			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+			reader, writer := io.Pipe()
+			messenger := make(chan string)
+			uploaders[id] = &Uploader{
+				writer:    writer,
+				messenger: messenger,
+			}
+			logger.SendSuccess("")
+			// Put reader in goroutine to upload
+			go func() {
+				log.Printf("(%d) Starting upload to %s\n", id, virtualPath)
+				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, messenger)
+				if err != nil {
+					log.Printf("(%d) Failed upload to %s: %v", id, virtualPath, err)
+					logger.SendFailure(err.Error())
+					fs.Remove(virtualPath, false, true)
+				} else {
+					log.Printf("(%d) Finished upload to %s", id, virtualPath)
+					logger.SendIntermediate(consumeMessenger(messenger))
+					logger.SendIntermediate(fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)))
+					logger.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
+				}
+				delete(uploaders, id)
+			}()
+			break
+		}
+	case MSG_TYPE_UPLOAD_CHUNK:
+		{
+			uploader := uploaders[id]
+			if uploader != nil {
+				header, err := reader.ReadByte()
+				if err != nil {
+					logger.SendFailure(err.Error())
+					break
+				}
+				switch header {
+				case UploadHeaderChunk, UploadHeaderEnd:
+					size, err := reader.ReadUInt64()
+					if err != nil {
+						logger.SendFailure(err.Error())
+						break
+					}
+					data, err := reader.ReadNBytes(int(size))
+					if err != nil {
+						logger.SendFailure(err.Error())
+						break
+					}
+					uploader.writer.Write(data)
+					if header == UploadHeaderEnd {
+						uploader.writer.Close()
+						// The main goroutine will send success
+					} else {
+						logger.SendSuccess(consumeMessenger(uploader.messenger))
+					}
+				case UploadHeaderAbort:
+					uploader.writer.CloseWithError(errors.New("Client aborted"))
+					logger.SendSuccess("")
+				}
 			} else {
-				logger.SendIntermediate(fmt.Appendf(nil, "\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)))
-				logger.SendSuccess(fmt.Appendf(nil, "\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
+				logger.SendFailure("No writer")
 			}
 			break
 		}
@@ -139,21 +216,21 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			physicalPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			// Logger automatically succeeds if no error
 			result, err := fs.Download(virtualPath, physicalPath, logger)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 			} else {
-				logger.SendIntermediate(fmt.Appendf(nil, "\nDownloaded to %s successfully", physicalPath))
-				logger.SendSuccess(fmt.Appendf(nil, "\nTime elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", "")))
+				logger.SendIntermediate(fmt.Sprintf("\nDownloaded to %s successfully", physicalPath))
+				logger.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", "")))
 			}
 			break
 		}
@@ -161,12 +238,12 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			long, err := reader.ReadByte()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			human, err := reader.ReadByte()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			virtualPath, err := reader.ReadUtf8()
@@ -175,7 +252,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			entries, err := fs.ReadDir(virtualPath, long == 1)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			var body strings.Builder
@@ -223,26 +300,26 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 					}
 				}
 			}
-			logger.SendSuccess([]byte(body.String()))
+			logger.SendSuccess(body.String())
 			break
 		}
 	case MSG_TYPE_MOVE:
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			err = fs.Move(src, dest)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 			} else {
-				logger.SendSuccess([]byte{})
+				logger.SendSuccess("")
 			}
 			break
 		}
@@ -250,7 +327,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -263,9 +340,9 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Remove(virtualPath, recursive == 1, remote == 1)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 			} else {
-				logger.SendSuccess([]byte{})
+				logger.SendSuccess("")
 			}
 			break
 		}
@@ -273,7 +350,7 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			virtualPath, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			recursive, err := reader.ReadByte()
@@ -282,9 +359,9 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 			}
 			err = fs.Mkdir(virtualPath, recursive == 1)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 			} else {
-				logger.SendSuccess([]byte{})
+				logger.SendSuccess("")
 			}
 			break
 		}
@@ -292,19 +369,19 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		{
 			src, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			dest, err := reader.ReadUtf8()
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 				return
 			}
 			err = fs.Copy(src, dest)
 			if err != nil {
-				logger.SendFailure([]byte(err.Error()))
+				logger.SendFailure(err.Error())
 			} else {
-				logger.SendSuccess([]byte{})
+				logger.SendSuccess("")
 			}
 			break
 		}

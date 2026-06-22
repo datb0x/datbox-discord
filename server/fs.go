@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/md5"
 	"crypto/sha256"
@@ -827,21 +828,12 @@ type TransferResult struct {
 	Checksum  []byte
 }
 
-func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion byte, logger *comm.IPCLogger) (result TransferResult, err error) {
+func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, virtualPath string, fileVersion byte, messenger chan string) (result TransferResult, err error) {
 	virtualPath = fs.sanitize(virtualPath)
-	stat, err := os.Stat(physicalPath)
-	if err != nil {
-		err = errors.New("Source file doesn't exist")
-		return
-	}
-	if stat.IsDir() {
-		err = errors.New("Only file uploads are currently supported")
-		return
-	}
 
-	stat, err = fs.Stat(virtualPath, true)
+	stat, err := fs.Stat(virtualPath, true)
 	if err == nil && stat.IsDir() {
-		virtualPath = path.Join(virtualPath, path.Base(physicalPath))
+		virtualPath = path.Join(virtualPath, path.Base(name))
 	}
 
 	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
@@ -878,6 +870,9 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 
 	// Defer syncing
 	defer func() {
+		if err != nil {
+			return
+		}
 		packed, hash, err := fs.packFileSystem(false)
 		if err != nil {
 			log.Println(err)
@@ -893,7 +888,7 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 	}()
 
 	eventSignal := make(chan virtualfile.TransferEvent)
-	go file.UploadFrom(physicalPath, eventSignal)
+	go file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, eventSignal)
 	for {
 		event := <-eventSignal
 		if event.Done {
@@ -902,10 +897,12 @@ func (fs *DatboxFileSystem) Upload(physicalPath, virtualPath string, fileVersion
 				err = event.Err
 				return
 			}
-			logger.SendIntermediate(fmt.Appendf(nil, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds())))))
+			messenger <- fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds()))))
 			break
 		} else {
-			logger.SendDiscardable(fmt.Appendf(nil, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds())))))
+			go func() {
+				messenger <- fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds()))))
+			}()
 		}
 	}
 
@@ -947,15 +944,16 @@ func (fs *DatboxFileSystem) Download(virtualPath, physicalPath string, logger *c
 	go file.DownloadTo(physicalPath, eventSignal)
 	for {
 		event := <-eventSignal
+		elapsed := max(time.Since(result.StartTime).Seconds(), 1)
 		if event.Done {
 			if event.Err != nil {
 				err = event.Err
 				return
 			}
-			logger.SendIntermediate(fmt.Appendf(nil, "\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds())))))
+			logger.SendIntermediate(fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(elapsed)))))
 			break
 		} else {
-			logger.SendDiscardable(fmt.Appendf(nil, "\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds())))))
+			logger.SendDiscardable(fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(elapsed)))))
 		}
 	}
 

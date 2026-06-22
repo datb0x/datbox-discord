@@ -58,18 +58,18 @@ func (logger *IPCLogger) sendData(header byte, data []byte) {
 	logger.messages <- append([]byte{header}, data...)
 }
 
-func (logger *IPCLogger) SendSuccess(data []byte) {
-	go logger.sendData(LogHeaderSuccess, data)
+func (logger *IPCLogger) SendSuccess(message string) {
+	go logger.sendData(LogHeaderSuccess, []byte(message))
 }
 
-func (logger *IPCLogger) SendFailure(data []byte) {
-	go logger.sendData(LogHeaderFailure, data)
+func (logger *IPCLogger) SendFailure(message string) {
+	go logger.sendData(LogHeaderFailure, []byte(message))
 }
 
-func (logger *IPCLogger) SendDiscardable(data []byte) {
-	go logger.sendData(LogHeaderDiscardable, data)
+func (logger *IPCLogger) SendDiscardable(message string) {
+	go logger.sendData(LogHeaderDiscardable, []byte(message))
 }
 
-func (logger *IPCLogger) SendIntermediate(data []byte) {
-	go logger.sendData(LogHeaderIntermediate, data)
+func (logger *IPCLogger) SendIntermediate(message string) {
+	go logger.sendData(LogHeaderIntermediate, []byte(message))
 }

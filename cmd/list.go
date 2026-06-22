@@ -18,6 +18,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
+			defer client.Close()
 			writer := comm.NewWriter()
 			writer.WriteInt32(id)
 			writer.WriterBool(long)
