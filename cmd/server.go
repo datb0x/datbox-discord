@@ -68,7 +68,7 @@ var (
 			if err != nil {
 				log.Fatalln(err)
 			}
-			server, err := ipc.StartServer("datbox", &ipc.ServerConfig{MaxMsgSize: 1024*1024*5 + 1})
+			server, err := ipc.StartServer("datbox", &ipc.ServerConfig{MaxMsgSize: 1024 * 1024 * 6})
 			if err != nil {
 				log.Fatalln(err)
 			}
