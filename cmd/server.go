@@ -33,13 +33,8 @@ const (
 	MSG_TYPE_INFO         = 9
 )
 
-type Uploader struct {
-	writer  *io.PipeWriter
-	message *string
-}
-
 var (
-	uploaders = map[int]*Uploader{}
+	uploaders = make(map[int]*io.PipeWriter)
 	startTime time.Time
 )
 
@@ -140,27 +135,33 @@ func runAction(msgType int, reader *util.DataWrapper, server *util.IPCServer, fs
 				return err
 			}
 			reader, writer := io.Pipe()
-			var message string
-			uploaders[server.ID] = &Uploader{
-				writer:  writer,
-				message: &message,
-			}
+			messages := make(chan string, 2)
+			var lastMessage *string
+			uploaders[server.ID] = writer
 			server.SendSuccess("", true)
 			server.Reset()
 			// Put reader in goroutine to upload
 			go func() {
 				log.Printf("(%d) Starting upload to %s\n", server.ID, virtualPath)
-				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, &message)
+				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, messages)
 				if err != nil {
 					log.Printf("(%d) Failed upload to %s: %v", server.ID, virtualPath, err)
 					server.SendFailure(err.Error())
 				} else {
 					log.Printf("(%d) Finished upload to %s", server.ID, virtualPath)
-					server.SendIntermediate(message, true)
+					close(messages)
+					server.SendIntermediate(*lastMessage, true)
 					server.SendIntermediate(fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)), true)
 					server.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
 				}
 				delete(uploaders, server.ID)
+			}()
+			// Extra goroutine for sending progress
+			go func() {
+				for msg := range messages {
+					lastMessage = &msg
+					server.SendIntermediate(msg)
+				}
 			}()
 			break
 		}
@@ -182,15 +183,15 @@ func runAction(msgType int, reader *util.DataWrapper, server *util.IPCServer, fs
 						server.SendFailure(err.Error())
 						return err
 					}
-					uploader.writer.Write(data)
+					uploader.Write(data)
 					if header == UploadHeaderEnd {
-						uploader.writer.Close()
+						uploader.Close()
 						// The main goroutine will send success
 					} else {
-						server.SendSuccess(*uploader.message)
+						server.SendSuccess("")
 					}
 				case UploadHeaderAbort:
-					uploader.writer.CloseWithError(errors.New("Client aborted"))
+					uploader.CloseWithError(errors.New("Client aborted"))
 				}
 			} else {
 				server.SendFailure("No writer")

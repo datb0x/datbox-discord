@@ -859,7 +859,7 @@ type TransferResult struct {
 	Checksum  []byte
 }
 
-func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, virtualPath string, fileVersion byte, message *string) (result TransferResult, err error) {
+func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, virtualPath string, fileVersion byte, messages chan string) (result TransferResult, err error) {
 	virtualPath = fs.sanitize(virtualPath)
 
 	stat, err := fs.Stat(virtualPath, true)
@@ -928,10 +928,10 @@ func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, 
 				err = event.Err
 				return
 			}
-			*message = fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds()))))
+			messages <- fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds()))))
 			break
 		} else {
-			*message = fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds()))))
+			messages <- fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds()))))
 		}
 	}
 
