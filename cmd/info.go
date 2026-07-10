@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"datbox/comm"
+	"datbox/util"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -12,7 +12,7 @@ var (
 		Use:   "info",
 		Short: "Get info of Datbox",
 		Run: func(cmd *cobra.Command, args []string) {
-			client, err := comm.NewClientWrapperAndConnect()
+			client, err := util.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}

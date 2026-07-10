@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"datbox/comm"
+	"datbox/util"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -13,7 +13,7 @@ var (
 		Short: "Move a file or directory",
 		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, err := comm.NewClientWrapperAndConnect()
+			client, err := util.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}

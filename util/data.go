@@ -1,4 +1,4 @@
-package comm
+package util
 
 import (
 	"encoding/binary"

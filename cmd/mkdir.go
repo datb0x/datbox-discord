@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"datbox/comm"
+	"datbox/util"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -14,7 +14,7 @@ var (
 		Short: "Create a directory",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, err := comm.NewClientWrapperAndConnect()
+			client, err := util.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"datbox/comm"
+	"datbox/util"
 	"io"
 	"log"
 	"os"
@@ -24,7 +24,7 @@ var (
 		Short: "Upload a file to the virtual file system",
 		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, err := comm.NewClientWrapperAndConnect()
+			client, err := util.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}

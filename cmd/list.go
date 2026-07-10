@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"datbox/comm"
+	"datbox/util"
 	"log"
 
 	"github.com/spf13/cobra"
@@ -14,7 +14,7 @@ var (
 		Use:   "ls",
 		Short: "List files in a directory",
 		Run: func(cmd *cobra.Command, args []string) {
-			client, err := comm.NewClientWrapperAndConnect()
+			client, err := util.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}

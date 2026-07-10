@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"crypto/md5"
-	"datbox/network"
+	"datbox/server/network"
 	"encoding/hex"
 	"errors"
 	"fmt"

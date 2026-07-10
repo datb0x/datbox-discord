@@ -1,4 +1,4 @@
-package comm
+package util
 
 import (
 	ipc "github.com/james-barrow/golang-ipc"

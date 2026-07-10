@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"datbox/comm"
-	"datbox/network"
 	"datbox/server"
+	"datbox/server/network"
+	"datbox/util"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -114,19 +114,19 @@ func handleMessage(server *ipc.Server, message *ipc.Message, fs *server.DatboxFi
 		log.Println(message.Err)
 		return
 	}
-	reader := comm.NewDataWrapper(message.Data)
+	reader := util.NewDataWrapper(message.Data)
 	id, err := reader.ReadInt32()
 	if err != nil {
 		return
 	}
-	wrapper := comm.NewServerWrapper(server, int(id))
+	wrapper := util.NewServerWrapper(server, int(id))
 	err = runAction(message.MsgType, reader, wrapper, fs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 }
 
-func runAction(msgType int, reader *comm.DataWrapper, server *comm.IPCServer, fs *server.DatboxFileSystem) error {
+func runAction(msgType int, reader *util.DataWrapper, server *util.IPCServer, fs *server.DatboxFileSystem) error {
 	switch msgType {
 	case MSG_TYPE_UPLOAD:
 		{

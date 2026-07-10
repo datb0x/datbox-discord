@@ -5,7 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"datbox/network"
+	"datbox/server/network"
 	"encoding/hex"
 	"errors"
 	"fmt"
