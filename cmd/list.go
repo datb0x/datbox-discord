@@ -14,24 +14,23 @@ var (
 		Use:   "ls",
 		Short: "List files in a directory",
 		Run: func(cmd *cobra.Command, args []string) {
-			client, id, err := comm.StartClientAndWait()
+			client, err := comm.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}
 			defer client.Close()
-			writer := comm.NewWriter()
-			writer.WriteInt32(id)
+			writer := client.Prepare()
 			writer.WriterBool(long)
 			writer.WriterBool(human)
 			if len(args) > 0 {
 				writer.WriteUtf8(args[0])
 			}
-			err = client.Write(MSG_TYPE_LIST, writer.Data)
+			err = client.Send(MSG_TYPE_LIST)
 			if err != nil {
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			err = comm.ReadUntilEnd(client, id)
+			err = client.ReadAllMsgs()
 			if err != nil {
 				log.Fatalln(err)
 			}

@@ -29,6 +29,10 @@ type V0File struct {
 	size           uint64
 	octoBuf        []byte
 	checksum       []byte
+
+	// V0-specific
+	lastChunk  int
+	gzipReader *gzip.Reader
 }
 
 func NewV0File(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) *V0File {
@@ -38,6 +42,7 @@ func NewV0File(root, path, fsMsg, fsHash string, network *network.DatboxNetwork)
 	file.FileSystemMsg = fsMsg
 	file.FileSystemHash = fsHash
 	file.network = network
+	file.lastChunk = -1
 	return file
 }
 

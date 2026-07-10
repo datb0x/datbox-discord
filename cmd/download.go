@@ -15,7 +15,7 @@ var (
 		Short: "Download a file from the virtual file system",
 		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, id, err := comm.StartClientAndWait()
+			client, err := comm.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -37,14 +37,13 @@ var (
 				log.Fatalf("Failed to open file with create and write flag: %v", err)
 			}
 			defer file.Close()
-			writer := comm.NewWriter()
-			writer.WriteInt32(id)
+			writer := client.Prepare()
 			writer.WriteUtf8(args[0])
-			err = client.Write(MSG_TYPE_DOWNLOAD, writer.Data)
+			err = client.Send(MSG_TYPE_DOWNLOAD)
 			if err != nil {
 				log.Fatalf("Failed to write data to ipc: %v", err)
 			}
-			err = comm.ReadUntilEndWithRaw(client, id, file)
+			err = client.ReadAllMsgs(file)
 			if err != nil {
 				log.Fatalln(err)
 			}

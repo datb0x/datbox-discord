@@ -12,19 +12,18 @@ var (
 		Use:   "info",
 		Short: "Get info of Datbox",
 		Run: func(cmd *cobra.Command, args []string) {
-			client, id, err := comm.StartClientAndWait()
+			client, err := comm.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}
 			defer client.Close()
-			writer := comm.NewWriter()
-			writer.WriteInt32(id)
-			err = client.Write(MSG_TYPE_INFO, writer.Data)
+			client.Prepare()
+			err = client.Send(MSG_TYPE_INFO)
 			if err != nil {
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			err = comm.ReadUntilEnd(client, id)
+			err = client.ReadAllMsgs()
 			if err != nil {
 				log.Fatalln(err)
 			}

@@ -24,7 +24,7 @@ var (
 		Short: "Upload a file to the virtual file system",
 		Args:  cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, id, err := comm.StartClientAndWait()
+			client, err := comm.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}
@@ -38,53 +38,49 @@ var (
 				log.Fatalln(err)
 			}
 			// Establish reader
-			writer := comm.NewWriter()
-			writer.WriteInt32(id)
+			writer := client.Prepare()
 			writer.WriteByte(uploadFileVersion)
 			writer.WriteUInt64(uint64(stat.Size()))
 			writer.WriteUtf8(filepath.Base(absPhys))
 			writer.WriteUtf8(args[1])
-			err = client.Write(MSG_TYPE_UPLOAD, writer.Data)
+			err = client.Send(MSG_TYPE_UPLOAD)
 			if err != nil {
-				log.Println("Failed to write data to ipc")
-				log.Fatalln(err)
+				log.Printf("Failed to write data to ipc: %v", err)
 			}
-			err = comm.ReadUntilEnd(client, id)
+			err = client.ReadAllMsgs()
 			if err != nil {
 				log.Fatalln(err)
 			}
 			// Start upload
 			file, err := os.Open(absPhys)
 			if err != nil {
-				writer.Clear()
-				writer.WriteInt32(id)
+				writer = client.Prepare()
 				writer.WriteByte(UploadHeaderAbort)
-				client.Write(MSG_TYPE_UPLOAD_CHUNK, writer.Data)
+				client.Send(MSG_TYPE_UPLOAD_CHUNK)
 				log.Fatalln(err)
 			}
 			data := make([]byte, SendChunkSize)
 			for {
-				writer.Clear()
-				writer.WriteInt32(id)
+				writer = client.Prepare()
 				read, err := file.Read(data)
 				if err != nil {
 					if err == io.EOF {
 						writer.WriteByte(UploadHeaderEnd)
 						writer.WriteUInt64(uint64(read))
 						writer.WriteBytes(data[:read])
-						client.Write(MSG_TYPE_UPLOAD_CHUNK, writer.Data)
-						comm.ReadUntilEnd(client, id)
+						client.Send(MSG_TYPE_UPLOAD_CHUNK)
+						client.ReadAllMsgs()
 						break
 					}
 					writer.WriteByte(UploadHeaderAbort)
-					client.Write(MSG_TYPE_UPLOAD_CHUNK, writer.Data)
+					client.Send(MSG_TYPE_UPLOAD_CHUNK)
 					log.Fatalln(err)
 				}
 				writer.WriteByte(UploadHeaderChunk)
 				writer.WriteUInt64(uint64(read))
 				writer.WriteBytes(data[:read])
-				client.Write(MSG_TYPE_UPLOAD_CHUNK, writer.Data)
-				comm.ReadUntilEnd(client, id)
+				err = client.Send(MSG_TYPE_UPLOAD_CHUNK)
+				client.ReadAllMsgs()
 			}
 		},
 	}

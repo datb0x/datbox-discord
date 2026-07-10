@@ -14,22 +14,21 @@ var (
 		Short: "Create a directory",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			client, id, err := comm.StartClientAndWait()
+			client, err := comm.NewClientWrapperAndConnect()
 			if err != nil {
 				log.Fatalln(err)
 			}
 			defer client.Close()
-			writer := comm.NewWriter()
-			writer.WriteInt32(id)
+			writer := client.Prepare()
 			writer.WriteUtf8(args[0])
 			writer.WriterBool(recursive)
 			writer.WriterBool(remote)
-			err = client.Write(MSG_TYPE_MKDIR, writer.Data)
+			err = client.Send(MSG_TYPE_MKDIR)
 			if err != nil {
 				log.Println("Failed to write data to ipc")
 				log.Fatalln(err)
 			}
-			err = comm.ReadUntilEnd(client, id)
+			err = client.ReadAllMsgs()
 			if err != nil {
 				log.Fatalln(err)
 			}
