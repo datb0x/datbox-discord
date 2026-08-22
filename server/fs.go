@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/md5"
 	"crypto/sha256"
@@ -33,13 +32,15 @@ import (
 )
 
 type DatboxFileSystem struct {
-	config        *DatboxConfig
-	root          string
-	network       *network.DatboxNetwork
-	fileReference map[string]int
-	initialized   bool
-	lastFsHash    string
-	lastFsMsgID   string
+	config         *DatboxConfig
+	root           string
+	network        *network.DatboxNetwork
+	fileReference  map[string]int
+	initialized    bool
+	lastFsHash     string
+	lastFsMsgID    string
+	globalPassword []byte
+	dirty          bool
 }
 
 type FileInfo struct {
@@ -73,6 +74,14 @@ func NewFileSystem(config *DatboxConfig, network *network.DatboxNetwork) (*Datbo
 	fs.fileReference = map[string]int{}
 	fs.initialized = false
 
+	if fs.config.Encrypted {
+		var err error
+		fs.globalPassword, err = hex.DecodeString(fs.config.Raw.Password)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	os.MkdirAll(fs.root, 0755)
 
 	refPath := path.Join(fs.config.Raw.DataDir, "ref.json")
@@ -101,7 +110,7 @@ func NewFileSystem(config *DatboxConfig, network *network.DatboxNetwork) (*Datbo
 }
 
 func (fs *DatboxFileSystem) sanitize(virtualPath string) string {
-	sanitized, err := filepath.Rel(fs.root, path.Join(fs.root, virtualPath))
+	sanitized, err := filepath.Rel(fs.root, fs.TranslatePath(virtualPath))
 	if err != nil || strings.HasPrefix(sanitized, "..") {
 		return "/"
 	}
@@ -139,7 +148,7 @@ func (fs *DatboxFileSystem) saveReference() error {
 }
 
 func (fs *DatboxFileSystem) exists(virtualPath string) bool {
-	_, err := os.Stat(path.Join(fs.root, virtualPath))
+	_, err := os.Stat(fs.TranslatePath(virtualPath))
 	return err == nil
 }
 
@@ -592,6 +601,14 @@ Sync:
 	return nil
 }
 
+func (fs *DatboxFileSystem) TranslatePath(virtualPath string) string {
+	return path.Join(fs.root, virtualPath)
+}
+
+func (fs *DatboxFileSystem) MarkDirty() {
+	fs.dirty = true
+}
+
 func (fs *DatboxFileSystem) Info() string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Root: %s", fs.root)
@@ -624,23 +641,23 @@ func (fs *DatboxFileSystem) Info() string {
 	return builder.String()
 }
 
-func (fs *DatboxFileSystem) Mkdir(virtualPath string, all ...bool) error {
+func (fs *DatboxFileSystem) Mkdir(virtualPath string, perm os.FileMode, all ...bool) error {
 	virtualPath = fs.sanitize(virtualPath)
 	if len(all) == 1 && all[0] {
-		return os.MkdirAll(path.Join(fs.root, virtualPath), 0755)
+		return os.MkdirAll(fs.TranslatePath(virtualPath), perm)
 	} else {
-		return os.Mkdir(path.Join(fs.root, virtualPath), 0755)
+		return os.Mkdir(fs.TranslatePath(virtualPath), perm)
 	}
 }
 
 func (fs *DatboxFileSystem) Stat(virtualPath string, local ...bool) (os.FileInfo, error) {
 	virtualPath = fs.sanitize(virtualPath)
-	stat, err := os.Stat(path.Join(fs.root, virtualPath))
+	stat, err := os.Stat(fs.TranslatePath(virtualPath))
 	if err != nil {
 		return nil, err
 	}
 	if !stat.IsDir() && (len(local) == 0 || !local[0]) {
-		file, err := os.Open(path.Join(fs.root, virtualPath))
+		file, err := os.Open(fs.TranslatePath(virtualPath))
 		if err != nil {
 			return nil, err
 		}
@@ -680,14 +697,14 @@ func (fs *DatboxFileSystem) Stat(virtualPath string, local ...bool) (os.FileInfo
 
 func (fs *DatboxFileSystem) ReadDir(virtualPath string, long ...bool) ([]DirEntry, error) {
 	virtualPath = fs.sanitize(virtualPath)
-	if stat, err := os.Stat(path.Join(fs.root, virtualPath)); err != nil || !stat.IsDir() {
+	if stat, err := os.Stat(fs.TranslatePath(virtualPath)); err != nil || !stat.IsDir() {
 		if err != nil {
 			return nil, err
 		}
 		return nil, errors.New("Not a directory")
 	}
 	results := []DirEntry{}
-	entries, err := os.ReadDir(path.Join(fs.root, virtualPath))
+	entries, err := os.ReadDir(fs.TranslatePath(virtualPath))
 	if err != nil {
 		return nil, err
 	}
@@ -711,7 +728,7 @@ func (fs *DatboxFileSystem) Move(src, dest string) error {
 		return errors.New("Destination file doesn't exist")
 	}
 
-	return os.Rename(path.Join(fs.root, src), path.Join(fs.root, dest))
+	return os.Rename(fs.TranslatePath(src), fs.TranslatePath(dest))
 }
 
 func (fs *DatboxFileSystem) recursiveIncrementReference(eitherPath string) error {
@@ -748,11 +765,11 @@ func (fs *DatboxFileSystem) recursiveIncrementReference(eitherPath string) error
 func (fs *DatboxFileSystem) Copy(src, dest string) error {
 	src = fs.sanitize(src)
 	dest = fs.sanitize(dest)
-	err := cp.Copy(path.Join(fs.root, src), path.Join(fs.root, dest))
+	err := cp.Copy(fs.TranslatePath(src), fs.TranslatePath(dest))
 	if err != nil {
 		return err
 	}
-	err = fs.recursiveIncrementReference(path.Join(fs.root, src))
+	err = fs.recursiveIncrementReference(fs.TranslatePath(src))
 	if err != nil {
 		return err
 	}
@@ -784,7 +801,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 				return err
 			}
 		}
-		entries, err := os.ReadDir(path.Join(fs.root, virtualPath))
+		entries, err := os.ReadDir(fs.TranslatePath(virtualPath))
 		if err != nil {
 			return err
 		}
@@ -801,7 +818,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 				return err
 			}
 		}
-		hash, err := fs.md5(path.Join(fs.root, virtualPath))
+		hash, err := fs.md5(fs.TranslatePath(virtualPath))
 		if err != nil {
 			return err
 		}
@@ -815,18 +832,18 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 			if refs >= 1 {
 				log.Println("Cannot delete remote. Another file referencing the same chunks exist")
 			} else {
-				file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
+				file, err := os.Open(fs.TranslatePath(virtualPath))
 				if err != nil {
 					return err
 				}
-				err = file.OpenOrCreate()
+				vFile, err := virtualfile.NewVirtualFile(file, fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.globalPassword, fs.network, -1)
 				if err != nil {
 					return err
 				}
-				defer file.Close()
+				defer vFile.Close()
 				ids := []string{}
 				for {
-					id, err := file.ReadMsgID()
+					id, err := vFile.ReadMsgID()
 					if err != nil {
 						return err
 					}
@@ -838,7 +855,7 @@ func (fs *DatboxFileSystem) Remove(virtualPath string, options ...bool) error {
 				fs.network.DeleteMessages(ids)
 			}
 		}
-		err = os.Remove(path.Join(fs.root, virtualPath))
+		err = os.Remove(fs.TranslatePath(virtualPath))
 		if err != nil {
 			return err
 		}
@@ -856,10 +873,9 @@ type TransferResult struct {
 	EndTime   time.Time
 	Size      uint64
 	Chunks    int
-	Checksum  []byte
 }
 
-func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, virtualPath string, fileVersion byte, messages chan string) (result TransferResult, err error) {
+func (fs *DatboxFileSystem) Upload(fileReader io.Reader, size int64, name, virtualPath string, fileVersion int, message *string) (result TransferResult, err error) {
 	virtualPath = fs.sanitize(virtualPath)
 
 	stat, err := fs.Stat(virtualPath, true)
@@ -867,35 +883,24 @@ func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, 
 		virtualPath = path.Join(virtualPath, path.Base(name))
 	}
 
-	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
-	os.MkdirAll(virtualDir, 0755)
-	if _, err = os.Stat(virtualDir); err != nil {
+	realDir := fs.TranslatePath(path.Dir(virtualPath))
+	os.MkdirAll(realDir, 0755)
+	if _, err = os.Stat(realDir); err != nil {
 		err = errors.New("Failed to create directory")
 		return
 	}
-	if _, err = os.Stat(path.Join(fs.root, virtualPath)); err == nil {
+	if _, err = os.Stat(fs.TranslatePath(virtualPath)); err == nil {
 		err = errors.New("File already exists in virtual file system")
 		return
 	}
 
 	result.StartTime = time.Now()
-	var globalPassword []byte
-	if fs.config.Encrypted {
-		globalPassword, err = hex.DecodeString(fs.config.Raw.Password)
-		if err != nil {
-			return
-		}
-	}
-	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, fs.network, fileVersion)
+	file, err := os.Create(fs.TranslatePath(virtualPath))
 	if err != nil {
 		return
 	}
-	err = file.OpenOrCreate()
+	vFile, err := virtualfile.NewVirtualFile(file, fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.globalPassword, fs.network, fileVersion)
 	if err != nil {
-		return
-	}
-	if !file.WriteMode() {
-		err = errors.New("File should be in write mode")
 		return
 	}
 
@@ -918,27 +923,33 @@ func (fs *DatboxFileSystem) Upload(fileReader *io.PipeReader, size int64, name, 
 		fs.lastFsHash = hash
 	}()
 
-	eventSignal := make(chan virtualfile.TransferEvent)
-	go file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, eventSignal)
-	for {
-		event := <-eventSignal
-		if event.Done {
-			if event.Err != nil {
+	var data []byte
+	var chunks int64
+	var sentBytes int64
+	var read int
+	done := false
+	for !done {
+		read, err = virtualfile.ReadFill(fileReader, data)
+		if err != nil {
+			if err == io.EOF {
+				done = true
+			} else {
 				fs.Remove(virtualPath)
-				err = event.Err
 				return
 			}
-			messages <- fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds()))))
-			break
-		} else {
-			messages <- fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(time.Since(result.StartTime).Seconds()))))
 		}
+		_, err = vFile.WriteChunk(chunks, data[:read])
+		if err != nil {
+			fs.Remove(virtualPath)
+			return
+		}
+		sentBytes += int64(read)
+		*message = fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*sentBytes/size), humanize.Bytes(uint64(sentBytes)), humanize.Bytes(uint64(size)), humanize.Bytes(uint64(sentBytes/int64(time.Since(result.StartTime).Seconds()))))
 	}
 
 	result.EndTime = time.Now()
-	result.Size = uint64(file.Size())
-	result.Chunks = file.Chunks()
-	result.Checksum = file.Checksum()
+	result.Size = uint64(vFile.Size())
+	result.Chunks = vFile.Chunks()
 
 	return
 }
@@ -947,40 +958,46 @@ func (fs *DatboxFileSystem) Download(fileWriter *io.PipeWriter, virtualPath stri
 	virtualPath = fs.sanitize(virtualPath)
 	_, err = fs.Stat(virtualPath, true)
 	if err != nil {
-		err = errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
+		err = errors.New("Virtual path " + fs.TranslatePath(virtualPath) + " doesn't exist")
 		return
 	}
 
 	result.StartTime = time.Now()
-	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
+	file, err := os.Open(fs.TranslatePath(virtualPath))
 	if err != nil {
 		return
 	}
-	defer file.Close()
-	err = file.OpenOrCreate()
+	vFile, err := virtualfile.NewVirtualFile(file, fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.globalPassword, fs.network, -1)
 	if err != nil {
 		return
 	}
-	if file.WriteMode() {
-		err = errors.New("File should not be in write mode")
-		return
-	}
-	eventSignal := make(chan virtualfile.TransferEvent)
-	go file.Download(fileWriter, eventSignal)
-	for {
-		event := <-eventSignal
-		elapsed := max(time.Since(result.StartTime).Seconds(), 1)
-		if event.Done {
-			if event.Err != nil {
-				err = event.Err
+	defer vFile.Close()
+	fileSize := vFile.Size()
+
+	var data []byte
+	var recvBytes int64
+	var chunks int64
+	done := false
+	for !done {
+		data, err = vFile.ReadChunk(chunks)
+		if err != nil {
+			if err == io.EOF {
+				done = true
+			} else {
 				return
 			}
-			*message = fmt.Sprintf("\rProgress: 100%% (%s / %s, %s/s)", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(elapsed))))
-			break
-		} else {
-			*message = fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*event.Current/event.Total), humanize.Bytes(uint64(event.Current)), humanize.Bytes(uint64(event.Total)), humanize.Bytes(uint64(event.Current/int64(elapsed))))
 		}
+		fileWriter.Write(data)
+		recvBytes += int64(len(data))
+		chunks++
+		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", virtualPath, chunks, vFile.Chunks(), recvBytes, fileSize)
+		// Message for client
+		elapsed := max(time.Since(result.StartTime).Seconds(), 1)
+		*message = fmt.Sprintf("\rProgress: %03d%% (%s / %s, %s/s)", int(100*recvBytes/fileSize), humanize.Bytes(uint64(recvBytes)), humanize.Bytes(uint64(fileSize)), humanize.Bytes(uint64(recvBytes/int64(elapsed))))
 	}
 
+	result.EndTime = time.Now()
+	result.Size = uint64(recvBytes)
+	result.Chunks = int(chunks)
 	return
 }

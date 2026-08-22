@@ -4,7 +4,6 @@ import (
 	"datbox/server"
 	"datbox/server/network"
 	"datbox/util"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -135,32 +134,31 @@ func runAction(msgType int, reader *util.DataWrapper, server *util.IPCServer, fs
 				return err
 			}
 			reader, writer := io.Pipe()
-			messages := make(chan string, 2)
-			var lastMessage *string
+			message := ""
+			updatingMessage := true
 			uploaders[server.ID] = writer
 			server.SendSuccess("", true)
 			server.Reset()
 			// Put reader in goroutine to upload
 			go func() {
 				log.Printf("(%d) Starting upload to %s\n", server.ID, virtualPath)
-				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, fileVersion, messages)
+				result, err := fs.Upload(reader, int64(fileSize), fileName, virtualPath, int(fileVersion), &message)
 				if err != nil {
 					log.Printf("(%d) Failed upload to %s: %v", server.ID, virtualPath, err)
 					server.SendFailure(err.Error())
 				} else {
 					log.Printf("(%d) Finished upload to %s", server.ID, virtualPath)
-					close(messages)
-					server.SendIntermediate(*lastMessage, true)
-					server.SendIntermediate(fmt.Sprintf("\nUploaded to %s as %d chunks (MD5 %s)", path.Join("/", virtualPath), result.Chunks, hex.EncodeToString(result.Checksum)), true)
+					updatingMessage = false
+					server.SendIntermediate(message, true)
+					server.SendIntermediate(fmt.Sprintf("\nUploaded to %s as %d chunks", path.Join("/", virtualPath), result.Chunks), true)
 					server.SendSuccess(fmt.Sprintf("\nTime elapsed: %s", humanize.RelTime(result.StartTime, result.EndTime, "", "")))
 				}
 				delete(uploaders, server.ID)
 			}()
 			// Extra goroutine for sending progress
 			go func() {
-				for msg := range messages {
-					lastMessage = &msg
-					server.SendIntermediate(msg)
+				for updatingMessage {
+					server.SendIntermediate(message)
 				}
 			}()
 			break
@@ -357,7 +355,7 @@ func runAction(msgType int, reader *util.DataWrapper, server *util.IPCServer, fs
 			if err != nil {
 				recursive = 0
 			}
-			err = fs.Mkdir(virtualPath, recursive == 1)
+			err = fs.Mkdir(virtualPath, 0o755, recursive == 1)
 			if err != nil {
 				server.SendFailure(err.Error())
 			} else {

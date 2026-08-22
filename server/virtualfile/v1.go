@@ -10,104 +10,100 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/big"
 	"os"
-	"path/filepath"
 	"strconv"
-
-	"golang.org/x/crypto/blake2b"
 )
 
 // V1 Header Structure
 // [0]: version int
 // [1:4] signature "DtBx"
 // [5:36] password
+// [37:44] file size
+// [-24:-17] separator
+// [-16:-0] md5 hash
 type V1File struct {
-	GlobalPassword []byte
-	Password       []byte
+	password []byte
 
 	V0File
 }
 
-func NewV1File(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork) *V1File {
-	file := new(V1File)
-	file.Path = filepath.Join(root, path)
-	file.RelPath = path
-	file.FileSystemMsg = fsMsg
-	file.FileSystemHash = fsHash
-	file.network = network
-	file.GlobalPassword = globalPassword
-	return file
+func NewV1File(file *os.File, fsData fsData, network *network.DatboxNetwork) (*V1File, error) {
+	vFile := new(V1File)
+	vFile.fsData = fsData
+	vFile.network = network
+	vFile.file = file
+
+	stat, err := file.Stat()
+	if err != nil && err != os.ErrNotExist {
+		return nil, err
+	}
+
+	vFile.ptr = 0
+	vFile.octoBuf = make([]byte, 8)
+	vFile.password = make([]byte, 32)
+
+	if err == os.ErrNotExist || stat.Size() == 0 {
+		// Generate password
+		_, err = rand.Read(vFile.password)
+		if err != nil {
+			return nil, err
+		}
+		// Write file signature
+		file.Write([]byte{1})
+		file.Write([]byte("DtBx"))
+		// Write encryption key
+		file.Write(vFile.password)
+		// Initialize file
+		vFile.chunks = 0
+		vFile.size = 0
+	} else {
+		if (stat.Size() % 8) == 0 {
+			return nil, errors.New("File is not version 1")
+		}
+		// Read header
+		_, err = io.ReadFull(file, vFile.octoBuf[:5])
+		if err != nil {
+			return nil, err
+		}
+		// Version number
+		if vFile.octoBuf[0] != 1 {
+			return nil, errors.New("File is not version 1")
+		}
+		// File signature
+		if string(vFile.octoBuf[1:5]) != "DtBx" {
+			return nil, errors.New("Wrong file signature")
+		}
+		// File encryption key
+		_, err = io.ReadFull(file, vFile.password)
+		if err != nil {
+			return nil, err
+		}
+		// File size
+		_, err = io.ReadFull(file, vFile.octoBuf)
+		if err != nil {
+			file.Close()
+			return nil, err
+		}
+		vFile.size = big.NewInt(0).SetBytes(vFile.octoBuf).Uint64()
+		vFile.chunks = int(math.Ceil(float64(vFile.size) / float64(FileChunkSize)))
+	}
+
+	return vFile, nil
 }
 
 func (f *V1File) Version() int {
 	return 1
 }
 
-func (f *V1File) OpenOrCreate() error {
-	f.octoBuf = make([]byte, 8)
-	f.Password = make([]byte, 32)
-	stat, err := os.Stat(f.Path)
-	if err != nil {
-		// Not exist
-		file, err := os.Create(f.Path)
-		if err != nil {
-			return err
-		}
-		f.file = file
-		f.writeMode = true
-		rand.Read(f.Password)
-	} else {
-		// Exists
-		file, err := os.Open(f.Path)
-		if err != nil {
-			return err
-		}
-		f.file = file
-		f.writeMode = false
-		if (stat.Size() % 8) == 0 {
-			return errors.New("File is not version 1")
-		}
-		// Read header
-		buf := make([]byte, 5)
-		_, err = io.ReadFull(file, buf)
-		if err != nil {
-			return err
-		}
-		// Version number
-		if buf[0] != 1 {
-			return errors.New("File is not version 1")
-		}
-		// File signature
-		if string(buf[1:5]) != "DtBx" {
-			return errors.New("Wrong file signature")
-		}
-		// File encryption key
-		_, err = io.ReadFull(file, f.Password)
-		if err != nil {
-			return err
-		}
-		// File size
-		_, err = io.ReadFull(file, f.octoBuf)
-		if err != nil {
-			file.Close()
-			return err
-		}
-		f.size = big.NewInt(0).SetBytes(f.octoBuf).Uint64()
-		f.chunks = int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
-	}
-	return nil
-}
-
 func (f *V1File) CopyHeader(header *network.DatboxHeader) (err error) {
-	f.Password, err = hex.DecodeString(header.Fields["password"])
+	f.password, err = hex.DecodeString(header.Fields["password"])
 	if err != nil {
 		return
 	}
-	if f.GlobalPassword != nil {
-		f.Password, err = SymmetricDecrypt(f.GlobalPassword, f.Password)
+	if f.fsData.Password != nil {
+		f.password, err = SymmetricDecrypt(f.fsData.Password, f.password)
 		if err != nil {
 			return
 		}
@@ -120,7 +116,7 @@ func (f *V1File) WriteHeader() error {
 	f.file.Write([]byte{1})
 	f.file.Write([]byte("DtBx"))
 	// Write encryption key
-	f.file.Write(f.Password)
+	f.file.Write(f.password)
 	// Write size
 	big.NewInt(int64(f.size)).FillBytes(f.octoBuf)
 	_, err := f.file.Write(f.octoBuf)
@@ -130,251 +126,173 @@ func (f *V1File) WriteHeader() error {
 	return nil
 }
 
-func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferEvent) {
-	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
-	}
-
-	f.size = uint64(size)
-
-	// Begin header
-	header := network.NewHeader(network.ActionBegin)
-	header.Fields["fs-msg"] = f.FileSystemMsg
-	header.Fields["fs-hash"] = f.FileSystemHash
-	header.Fields["path"] = f.RelPath
-	header.Fields["version"] = "1"
-	header.Fields["size"] = fmt.Sprint(f.size)
-
-	// Encrypt password if necessary
-	var filePassword []byte
-	var err error
-	if f.GlobalPassword != nil {
-		filePassword, err = SymmetricEncrypt(f.GlobalPassword, f.Password)
-		if err != nil {
-			endTransfer(channel, err)
-			return
-		}
-	} else {
-		filePassword = f.Password
-	}
-	header.Fields["password"] = hex.EncodeToString(filePassword)
-
-	err = f.network.SendMessage(header)
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-
-	// Delete fields for next header
-	delete(header.Fields, "size")
-	delete(header.Fields, "password")
-
-	// Chunk header
-	header.Action = network.ActionFileChunk
-
-	// Write file header
-	f.WriteHeader()
-
-	// Setup variables
-	buf := make([]byte, FileChunkSize)
-	estimatedChunks := int(math.Ceil(float64(size) / FileChunkSize))
-	uploadId := randomId()
-	log.Printf("(%s) Chunks: %d\n", uploadId, int(estimatedChunks))
-	header.Fields["chunks"] = fmt.Sprint(estimatedChunks)
-
-	// Piggyback file checksum
-	hasher, err := blake2b.New256([]byte("DtBx"))
-	if err != nil {
-		endTransfer(channel, err)
-		return
-	}
-
-	futures := structs.NewQueue[structs.Future[int64]](f.network.Uploader.Concurrency)
-	readBytes := make(chan int, f.network.Uploader.Concurrency)
-	index := 0
-
-	dequeueFuture := func() {
+func (f *V1File) Write(data []byte) (n int, err error) {
+	// Concurrency upload queue
+	futures := structs.NewQueue[structs.Future[uint64]](f.network.Uploader.Concurrency)
+	dequeueFuture := func() error {
 		future := futures.Dequeue()
-		id, err := future.Await()
-		if err != nil {
-			endTransfer(channel, err)
-			return
-		}
-		f.chunks++
-		fmt.Printf("\r(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
-		big.NewInt(*id).FillBytes(f.octoBuf)
-		f.file.Write(f.octoBuf)
+		_, err := future.Await()
+		return err
 	}
 
-	// Progress updater
-	go func() {
-		total := size
-		totalBytes := int64(0)
-		for totalBytes < total {
-			read := <-readBytes
-			totalBytes += int64(read)
-			channel <- TransferEvent{
-				Current: totalBytes,
-				Total:   total,
-			}
-		}
-	}()
+	for n < len(data) {
+		chunkIndex := f.ptr / FileChunkSize
+		chunkOffset := f.ptr - chunkIndex*FileChunkSize
 
-	for {
-		read, err := ReadFill(fileReader, buf)
-		if err != nil && err != io.EOF {
-			endTransfer(channel, err)
+		var buf []byte
+		buf, err = f.ReadChunk(chunkIndex)
+		if err == io.EOF {
+			// Need new chunk
+			buf = data[n:min(n+FileChunkSize, len(data))]
+			n += len(buf)
+			f.size += uint64(len(buf))
+			f.chunks++
+		} else if err != nil {
 			return
-		}
-		// Update hash
-		hasher.Write(buf[:read])
-
-		// Deflate data
-		pipeReader, pipeWriter := io.Pipe()
-		go func() {
-			flateWriter, err := flate.NewWriter(pipeWriter, flate.DefaultCompression)
-			if err != nil {
-				flateWriter.Close()
-			}
-			flateWriter.Write(buf[:read])
-			flateWriter.Close()
-			pipeWriter.Close()
-		}()
-		compressed, err := io.ReadAll(pipeReader)
-		if err != nil {
-			endTransfer(channel, err)
-			return
-		}
-
-		// Encrypt data
-		data, err := SymmetricEncrypt(f.Password, compressed)
-		if err != nil {
-			endTransfer(channel, err)
-			return
+		} else {
+			copied := copy(buf[chunkOffset:], data[n:])
+			f.ptr += int64(copied)
+			n += copied
 		}
 
 		// Send to Discord
 		for futures.IsFull() {
 			dequeueFuture()
 		}
-		header.Fields["index"] = fmt.Sprint(index)
-		headerStr := header.String()
-		index++
-		futures.Enqueue(structs.NewFuture(func() (int64, error) {
-			id, err := f.network.Uploader.SendAttachment(data, headerStr, false)
-			if err != nil {
-				return 0, err
-			}
-			parsed, err := strconv.ParseUint(id, 10, 64)
-			readBytes <- read
-			return int64(parsed), err
+		futures.Enqueue(structs.NewFuture(func() (uint64, error) {
+			return f.WriteChunk(chunkIndex, buf)
 		}), false)
-
-		if read != len(buf) {
-			break
-		}
 	}
 
 	for !futures.IsEmpty() {
 		dequeueFuture()
 	}
 
-	fmt.Println()
-
-	// Write separator
-	big.NewInt(0).FillBytes(f.octoBuf)
+	// Update size in header
+	big.NewInt(int64(f.size)).FillBytes(f.octoBuf)
+	_, err = f.file.Seek(37, io.SeekStart)
+	if err != nil {
+		return
+	}
 	f.file.Write(f.octoBuf)
-	// Write file checksum at the end
-	f.checksum = hasher.Sum(nil)
-	f.file.Write(f.checksum)
 
-	// End header
-	header = network.NewHeader(network.ActionComplete)
-	header.Fields["fs-msg"] = f.FileSystemMsg
-	header.Fields["fs-hash"] = f.FileSystemHash
-	header.Fields["path"] = f.RelPath
-	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
-	err = f.network.SendMessage(header)
-	endTransfer(channel, err)
+	// Write separator and empty checksum
+	big.NewInt(0).FillBytes(f.octoBuf)
+	_, err = f.file.Seek(45+int64(f.chunks)*8, io.SeekStart)
+	if err != nil {
+		return
+	}
+	for range 5 {
+		f.file.Write(f.octoBuf)
+	}
+
+	return
 }
 
-func (f *V1File) Verify(checksum []byte) (bool, error) {
-	if f.file == nil {
-		return false, errors.New("No file opened")
-	}
-	buf := make([]byte, len(checksum))
-	f.file.Seek(-32, io.SeekEnd)
-	read, err := f.file.Read(buf)
-	if read != 32 || err != nil && err != io.EOF {
-		return false, errors.New("Virtual file is corrupted")
-	}
-	for ii := range 32 {
-		if buf[ii] != checksum[ii] {
-			return false, nil
+func (f *V1File) Read(buf []byte) (n int, err error) {
+	var data []byte
+	chunkIndex := f.ptr / FileChunkSize
+	for n < len(buf) {
+		data, err = f.ReadChunk(chunkIndex)
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+				break
+			}
+			return
 		}
+		n += copy(buf[n:], data)
 	}
-	return true, nil
+	f.ptr += int64(n)
+	return
 }
 
-func (f *V1File) GetNextChunk() ([]byte, error) {
-	data, err := f.GetNextChunkRaw()
+func (f *V1File) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		f.ptr = offset
+	case io.SeekCurrent:
+		f.ptr += offset
+	case io.SeekEnd:
+		f.ptr = f.Size() - offset
+	}
+	return f.ptr, nil
+}
+
+func (f *V1File) ReadChunk(index int64) ([]byte, error) {
+	raw, err := f.ReadChunkRaw(index)
 	if err != nil {
 		return nil, err
 	}
 
 	// Decrypt
-	data, err = SymmetricDecrypt(f.Password, data)
+	raw, err = SymmetricDecrypt(f.password, raw)
 	// Inflate
-	return io.ReadAll(flate.NewReader(bytes.NewReader(data)))
+	return io.ReadAll(flate.NewReader(bytes.NewReader(raw)))
 }
 
-func (f *V1File) Download(fileWriter io.WriteCloser, channel chan TransferEvent) {
-	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
-	}
-	defer fileWriter.Close()
-
-	hasher, err := blake2b.New256([]byte("DtBx"))
+func (f *V1File) ReadChunkRaw(index int64) ([]byte, error) {
+	_, err := f.file.Seek(37+8*index, io.SeekStart)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return nil, err
 	}
-	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
-	chunks := 0
+	id, err := f.ReadMsgID()
+	if err != nil {
+		return nil, err
+	}
+	if id == 0 {
+		return nil, io.EOF
+	}
+	return f.network.FetchAttachment(strconv.FormatUint(id, 10))
+}
 
-	var data []byte
-	totalBytes := 0
-	for {
-		data, err = f.GetNextChunk()
+func (f *V1File) WriteChunk(index int64, data []byte) (uint64, error) {
+	// Setup header
+	header := network.NewHeader(network.ActionFileChunk)
+	header.Fields["fs-msg"] = f.fsData.MsgID
+	header.Fields["fs-hash"] = f.fsData.Hash
+	header.Fields["path"] = f.fsData.RelPath
+	header.Fields["version"] = "1"
+	header.Fields["index"] = fmt.Sprint(index)
+
+	// Deflate data
+	pipeReader, pipeWriter := io.Pipe()
+	go func() {
+		flateWriter, err := flate.NewWriter(pipeWriter, flate.DefaultCompression)
 		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			endTransfer(channel, err)
-			return
+			flateWriter.Close()
 		}
-		hasher.Write(data)
-		fileWriter.Write(data)
-		totalBytes += len(data)
-		chunks++
-		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", f.RelPath, chunks, estimatedChunks, totalBytes, f.size)
-		channel <- TransferEvent{
-			Current: int64(totalBytes),
-			Total:   f.Size(),
-		}
-	}
-	fmt.Println()
-
-	matched, err := f.Verify(hasher.Sum(nil))
+		flateWriter.Write(data)
+		flateWriter.Close()
+		pipeWriter.Close()
+	}()
+	compressed, err := io.ReadAll(pipeReader)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return 0, err
 	}
-	if !matched {
-		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
-		return
+
+	// Encrypt data
+	encrpyted, err := SymmetricEncrypt(f.password, compressed)
+	if err != nil {
+		return 0, err
 	}
-	endTransfer(channel, nil)
+
+	// Send and get message ID
+	id, err := f.network.Uploader.SendAttachment(encrpyted, header.String(), false)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.ParseUint(id, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	// Write to file
+	_, err = f.file.Seek(45+index*8, io.SeekStart)
+	if err != nil {
+		return 0, err
+	}
+	big.NewInt(int64(parsed)).FillBytes(f.octoBuf)
+	_, err = f.file.Write(f.octoBuf)
+	return parsed, err
 }

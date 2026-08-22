@@ -10,9 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
-	"path/filepath"
 )
 
 const FileChunkSize = 10 * 1024 * 1023
@@ -24,72 +22,60 @@ type TransferEvent struct {
 	Total   int64
 }
 
+type fsData struct {
+	Root     string
+	RelPath  string
+	MsgID    string
+	Hash     string
+	Password []byte
+}
+
 type VirtualFile interface {
 	Version() int
 	Chunks() int
 	Size() int64
-	WriteMode() bool
-	Checksum() []byte
 
-	OpenOrCreate() error
-	Close() error
 	CopyHeader(header *network.DatboxHeader) error
 
-	Write(data []byte) error
 	WriteHeader() error
-	WriteMsgID(id uint64) error
-	Upload(fileReader io.Reader, size int64, channel chan TransferEvent)
 
 	ReadMsgID() (uint64, error)
-	ReadPrevMsgID() (uint64, error)
-	Verify(checksum []byte) (bool, error)
 
-	GetNextChunk() ([]byte, error)
-	GetNextChunkRaw() ([]byte, error)
-	Download(fileWriter io.WriteCloser, channel chan TransferEvent)
+	ReadChunk(index int64) ([]byte, error)
+	ReadChunkRaw(index int64) ([]byte, error)
+	WriteChunk(index int64, data []byte) (uint64, error)
+	Raw() *os.File
+
+	io.Closer
+	io.Reader
+	io.Seeker
+	io.Writer
 }
 
-func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
-	if _, err := os.Stat(filepath.Join(root, path)); err == nil {
-		return nil, errors.New("File already exists")
+func NewVirtualFile(file *os.File, root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork, fileVersion int) (VirtualFile, error) {
+	fsData := fsData{
+		Root:     root,
+		RelPath:  path,
+		MsgID:    fsMsg,
+		Hash:     fsHash,
+		Password: globalPassword,
 	}
-	os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755)
-	log.Printf("Creating virtual file with version %d", fileVersion)
+	if fileVersion == -1 {
+		buf := make([]byte, 1)
+		read, err := file.Read(buf)
+		if err != nil || read != 1 {
+			return nil, errors.New("File version unspecified, but file does not exist")
+		}
+		fileVersion = int(buf[0])
+	}
 	switch fileVersion {
 	case 0:
-		return NewV0File(root, path, fsMsg, fsHash, network), nil
+		return NewV0File(file, fsData, network)
 	case 1:
-		return NewV1File(root, path, fsMsg, fsHash, globalPassword, network), nil
+		return NewV1File(file, fsData, network)
 	default:
 		return nil, errors.New("Unknown file version " + fmt.Sprint(fileVersion))
 	}
-}
-
-func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) (VirtualFile, error) {
-	stat, err := os.Stat(filepath.Join(root, path))
-	if err != nil {
-		return nil, err
-	}
-	if (stat.Size() % 8) == 0 {
-		log.Printf("Opening virtual file with version 0")
-		return NewV0File(root, path, fsMsg, fsHash, network), nil
-	} else {
-		file, err := os.Open(filepath.Join(root, path))
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, 1)
-		_, err = io.ReadFull(file, buf)
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("Opening virtual file with version %d", buf[0])
-		switch buf[0] {
-		case 1:
-			return NewV1File(root, path, fsMsg, fsHash, nil, network), nil
-		}
-	}
-	return nil, errors.New("Unknown file version")
 }
 
 func ReadFill(r io.Reader, buf []byte) (n int, err error) {
