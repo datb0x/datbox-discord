@@ -5,23 +5,26 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"datbox/server/network"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/datb0x/datbox-discord/internal"
+	"github.com/datb0x/datbox-discord/network"
 )
 
 const FileChunkSize = 10 * 1024 * 1023
 
 type TransferEvent struct {
-	Done    bool
-	Err     error
-	Current int64
-	Total   int64
+	Done          bool
+	Err           error
+	CurrentBytes  int64
+	TotalBytes    int64
+	CurrentChunks int
+	TotalChunks   int
 }
 
 type VirtualFile interface {
@@ -49,12 +52,12 @@ type VirtualFile interface {
 	Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 }
 
-func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork, fileVersion byte) (VirtualFile, error) {
+func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DiscordNetwork, fileVersion byte) (VirtualFile, error) {
 	if _, err := os.Stat(filepath.Join(root, path)); err == nil {
 		return nil, errors.New("File already exists")
 	}
 	os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0755)
-	log.Printf("Creating virtual file with version %d", fileVersion)
+	internal.Logger.Debugf("Creating virtual file with version %d", fileVersion)
 	switch fileVersion {
 	case 0:
 		return NewV0File(root, path, fsMsg, fsHash, network), nil
@@ -65,13 +68,13 @@ func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, 
 	}
 }
 
-func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) (VirtualFile, error) {
+func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DiscordNetwork) (VirtualFile, error) {
 	stat, err := os.Stat(filepath.Join(root, path))
 	if err != nil {
 		return nil, err
 	}
 	if (stat.Size() % 8) == 0 {
-		log.Printf("Opening virtual file with version 0")
+		internal.Logger.Debugf("Opening virtual file with version 0")
 		return NewV0File(root, path, fsMsg, fsHash, network), nil
 	} else {
 		file, err := os.Open(filepath.Join(root, path))
@@ -83,7 +86,7 @@ func OpenVirtualFile(root, path, fsMsg, fsHash string, network *network.DatboxNe
 		if err != nil {
 			return nil, err
 		}
-		log.Printf("Opening virtual file with version %d", buf[0])
+		internal.Logger.Debugf("Opening virtual file with version %d", buf[0])
 		switch buf[0] {
 		case 1:
 			return NewV1File(root, path, fsMsg, fsHash, nil, network), nil
