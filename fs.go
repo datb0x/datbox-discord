@@ -36,13 +36,10 @@ import (
 type discordFileSystem struct {
 	config         *discordConfig
 	root           string
-	network        *network.DiscordNetwork
 	fileReference  map[string]int
-	initialized    bool
 	lastFsHash     string
 	lastFsMsgID    string
 	globalPassword []byte
-	dirty          bool
 }
 
 type FileInfo struct {
@@ -68,13 +65,11 @@ type UploadResult struct {
 	Checksum []byte
 }
 
-func newFileSystem(config *discordConfig, network *network.DiscordNetwork) (*discordFileSystem, error) {
+func newFileSystem(config *discordConfig) (*discordFileSystem, error) {
 	fs := new(discordFileSystem)
 	fs.config = config
 	fs.root = path.Join(fs.config.DataDir, "root")
-	fs.network = network
 	fs.fileReference = map[string]int{}
-	fs.initialized = false
 
 	if fs.config.Password != "" && fs.config.Password != "skip" {
 		var err error
@@ -102,13 +97,16 @@ func newFileSystem(config *discordConfig, network *network.DiscordNetwork) (*dis
 		json.Unmarshal(bytes, &fs.fileReference)
 	}
 
-	err := fs.syncIfNeeded()
-	if err != nil {
-		return nil, err
-	}
-
-	fs.initialized = true
 	return fs, nil
+}
+
+func (fs *discordFileSystem) initNetwork() (net *network.DiscordNetwork, err error) {
+	net, err = network.NewNetwork(fs.config.Token, fs.config.ChannelId, fs.config.Concurrency)
+	if err != nil {
+		return
+	}
+	err = fs.syncIfNeeded(net)
+	return
 }
 
 func (fs *discordFileSystem) sanitize(virtualPath string) string {
@@ -256,7 +254,7 @@ func (dbfs *discordFileSystem) mergeFileSystem(remoteFs []byte) error {
 	return nil
 }
 
-func (fs *discordFileSystem) sendFileSystem(packed []byte, hash string) (string, error) {
+func (fs *discordFileSystem) sendFileSystem(net *network.DiscordNetwork, packed []byte, hash string) (string, error) {
 	header := network.NewHeader(network.ActionFileSystem)
 	header.Fields["hash"] = hash
 	header.Fields["chunks"] = fmt.Sprint(int64(math.Ceil(float64(len(packed)) / float64(virtualfile.FileChunkSize))))
@@ -292,7 +290,7 @@ func (fs *discordFileSystem) sendFileSystem(packed []byte, hash string) (string,
 		} else {
 			data = buf[:read]
 		}
-		msgID, err := fs.network.SendAttachment(data, header.String())
+		msgID, err := net.SendAttachment(data, header.String())
 		if err != nil {
 			return "", err
 		}
@@ -309,8 +307,8 @@ func (fs *discordFileSystem) sendFileSystem(packed []byte, hash string) (string,
 	return id, nil
 }
 
-func (fs *discordFileSystem) syncIfNeeded() error {
-	fsMessage, err := fs.network.FetchLastMessage()
+func (fs *discordFileSystem) syncIfNeeded(net *network.DiscordNetwork) error {
+	fsMessage, err := net.FetchLastMessage()
 	if err != nil {
 		return err
 	}
@@ -345,7 +343,7 @@ func (fs *discordFileSystem) syncIfNeeded() error {
 			internal.Logger.Debug("Last message does not contain filesystem. Sync needed")
 			goto Sync
 		}
-		fsMessage, err = fs.network.FetchMessage(fs.lastFsMsgID)
+		fsMessage, err = net.FetchMessage(fs.lastFsMsgID)
 		// Cannot fetch filesystem message
 		if err != nil {
 			internal.Logger.Debug("Error fetching filesystem message. Sync needed")
@@ -448,7 +446,7 @@ func (fs *discordFileSystem) syncIfNeeded() error {
 		seenIDs := map[string]bool{}
 		seenIDs[lastMessageID] = true
 		for chunks > 0 {
-			messages, err := fs.network.FetchMessagesSince(fsMessage.ID, int(chunks))
+			messages, err := net.FetchMessagesSince(fsMessage.ID, int(chunks))
 			if err != nil {
 				return err
 			}
@@ -504,7 +502,7 @@ func (fs *discordFileSystem) syncIfNeeded() error {
 		seenIDs := map[string]bool{}
 		seenIDs[lastMessageID] = true
 		for {
-			messages, err := fs.network.FetchMessagesSince(lastMessageID, 100)
+			messages, err := net.FetchMessagesSince(lastMessageID, 100)
 			if err != nil {
 				return err
 			}
@@ -594,7 +592,7 @@ Sync:
 	if hash == fs.lastFsHash {
 		return nil
 	}
-	id, err := fs.sendFileSystem(packed, hash)
+	id, err := fs.sendFileSystem(net, packed, hash)
 	if err != nil {
 		return err
 	}
@@ -743,6 +741,10 @@ func (fs *discordFileSystem) Copy(src, dest string) error {
 }
 
 func (fs *discordFileSystem) Remove(virtualPath string, options ...bool) error {
+	net, err := fs.initNetwork()
+	if err != nil {
+		return err
+	}
 	virtualPath = fs.sanitize(virtualPath)
 	recursive := len(options) > 0 && options[0]
 	remote := len(options) > 1 && options[1]
@@ -761,11 +763,9 @@ func (fs *discordFileSystem) Remove(virtualPath string, options ...bool) error {
 		if !recursive {
 			return errors.New("Cannot remove directory. Consider setting recursive to true")
 		}
-		if fs.initialized {
-			err = fs.network.SendMessage(header)
-			if err != nil {
-				return err
-			}
+		err = net.SendMessage(header)
+		if err != nil {
+			return err
 		}
 		entries, err := os.ReadDir(path.Join(fs.root, virtualPath))
 		if err != nil {
@@ -778,11 +778,9 @@ func (fs *discordFileSystem) Remove(virtualPath string, options ...bool) error {
 			}
 		}
 	} else {
-		if fs.initialized {
-			err = fs.network.SendMessage(header)
-			if err != nil {
-				return err
-			}
+		err = net.SendMessage(header)
+		if err != nil {
+			return err
 		}
 		hash, err := fs.md5(path.Join(fs.root, virtualPath))
 		if err != nil {
@@ -798,7 +796,7 @@ func (fs *discordFileSystem) Remove(virtualPath string, options ...bool) error {
 			if refs >= 1 {
 				internal.Logger.Error("Cannot delete remote. Another file referencing the same chunks exist")
 			} else {
-				file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
+				file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, net)
 				if err != nil {
 					return err
 				}
@@ -818,7 +816,7 @@ func (fs *discordFileSystem) Remove(virtualPath string, options ...bool) error {
 					}
 					ids = append(ids, strconv.FormatUint(id, 10))
 				}
-				fs.network.DeleteMessages(ids)
+				net.DeleteMessages(ids)
 			}
 		}
 		err = os.Remove(path.Join(fs.root, virtualPath))
@@ -843,6 +841,11 @@ type TransferResult struct {
 }
 
 func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string, size int64, fileVersion byte) (result TransferResult, err error) {
+	net, err := fs.initNetwork()
+	if err != nil {
+		return TransferResult{}, err
+	}
+
 	virtualPath = fs.sanitize(virtualPath)
 
 	stat, err := fs.Stat(virtualPath, true)
@@ -869,7 +872,7 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 			return
 		}
 	}
-	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, fs.network, fileVersion)
+	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, net, fileVersion)
 	if err != nil {
 		return
 	}
@@ -892,7 +895,7 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 			internal.Logger.Error(err)
 			return
 		}
-		id, err := fs.sendFileSystem(packed, hash)
+		id, err := fs.sendFileSystem(net, packed, hash)
 		if err != nil {
 			internal.Logger.Error(err)
 			return
@@ -927,6 +930,11 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 }
 
 func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath string) (result TransferResult, err error) {
+	net, err := fs.initNetwork()
+	if err != nil {
+		return TransferResult{}, err
+	}
+
 	virtualPath = fs.sanitize(virtualPath)
 	_, err = fs.Stat(virtualPath, true)
 	if err != nil {
@@ -935,7 +943,7 @@ func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath str
 	}
 
 	result.StartTime = time.Now()
-	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, fs.network)
+	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, net)
 	if err != nil {
 		return
 	}

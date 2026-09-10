@@ -15,7 +15,6 @@ import (
 
 	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
-	"github.com/datb0x/datbox-discord/network"
 	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 )
@@ -98,11 +97,7 @@ func NewDiscordProvider(configPath string) (datboxcore.Provider, error) {
 		internal.Logger.Errorf("Failed to save config: %v", err)
 	}
 
-	network, err := network.NewNetwork(config.Token, config.ChannelId, config.Concurrency)
-	if err != nil {
-		return nil, err
-	}
-	fs, err := newFileSystem(&config, network)
+	fs, err := newFileSystem(&config)
 	if err != nil {
 		return nil, err
 	}
