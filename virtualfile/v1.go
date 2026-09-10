@@ -4,18 +4,18 @@ import (
 	"bytes"
 	"compress/flate"
 	"crypto/rand"
-	"datbox/server/network"
-	"datbox/util/structs"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/datb0x/datbox-discord/internal"
+	"github.com/datb0x/datbox-discord/network"
 
 	"golang.org/x/crypto/blake2b"
 )
@@ -31,7 +31,7 @@ type V1File struct {
 	V0File
 }
 
-func NewV1File(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DatboxNetwork) *V1File {
+func NewV1File(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DiscordNetwork) *V1File {
 	file := new(V1File)
 	file.Path = filepath.Join(root, path)
 	file.RelPath = path
@@ -179,8 +179,6 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	// Setup variables
 	buf := make([]byte, FileChunkSize)
 	estimatedChunks := int(math.Ceil(float64(size) / FileChunkSize))
-	uploadId := randomId()
-	log.Printf("(%s) Chunks: %d\n", uploadId, int(estimatedChunks))
 	header.Fields["chunks"] = fmt.Sprint(estimatedChunks)
 
 	// Piggyback file checksum
@@ -190,7 +188,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		return
 	}
 
-	futures := structs.NewQueue[structs.Future[int64]](f.network.Uploader.Concurrency)
+	futures := internal.NewQueue[internal.Future[int64]](f.network.Uploader.Concurrency)
 	readBytes := make(chan int, f.network.Uploader.Concurrency)
 	index := 0
 
@@ -202,7 +200,6 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 			return
 		}
 		f.chunks++
-		fmt.Printf("\r(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
 		big.NewInt(*id).FillBytes(f.octoBuf)
 		f.file.Write(f.octoBuf)
 	}
@@ -215,8 +212,10 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 			read := <-readBytes
 			totalBytes += int64(read)
 			channel <- TransferEvent{
-				Current: totalBytes,
-				Total:   total,
+				CurrentBytes:  totalBytes,
+				TotalBytes:    total,
+				CurrentChunks: f.chunks,
+				TotalChunks:   estimatedChunks,
 			}
 		}
 	}()
@@ -261,7 +260,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		header.Fields["index"] = fmt.Sprint(index)
 		headerStr := header.String()
 		index++
-		futures.Enqueue(structs.NewFuture(func() (int64, error) {
+		futures.Enqueue(internal.NewFuture(func() (int64, error) {
 			id, err := f.network.Uploader.SendAttachment(data, headerStr, false)
 			if err != nil {
 				return 0, err
@@ -280,7 +279,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		dequeueFuture()
 	}
 
-	fmt.Println()
+	internal.Logger.Println()
 
 	// Write separator
 	big.NewInt(0).FillBytes(f.octoBuf)
@@ -359,13 +358,14 @@ func (f *V1File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 		fileWriter.Write(data)
 		totalBytes += len(data)
 		chunks++
-		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", f.RelPath, chunks, estimatedChunks, totalBytes, f.size)
 		channel <- TransferEvent{
-			Current: int64(totalBytes),
-			Total:   f.Size(),
+			CurrentBytes:  int64(totalBytes),
+			TotalBytes:    f.Size(),
+			CurrentChunks: chunks,
+			TotalChunks:   estimatedChunks,
 		}
 	}
-	fmt.Println()
+	internal.Logger.Println()
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {

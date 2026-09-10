@@ -1,4 +1,4 @@
-package structs
+package internal
 
 type Future[R any] struct {
 	channel chan bool

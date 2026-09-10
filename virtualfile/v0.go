@@ -4,17 +4,18 @@ import (
 	"bufio"
 	"compress/gzip"
 	"crypto/md5"
-	"datbox/server/network"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/datb0x/datbox-discord/internal"
+	"github.com/datb0x/datbox-discord/network"
 )
 
 type V0File struct {
@@ -23,7 +24,7 @@ type V0File struct {
 	FileSystemMsg  string
 	FileSystemHash string
 	writeMode      bool
-	network        *network.DatboxNetwork
+	network        *network.DiscordNetwork
 	file           *os.File
 	chunks         int
 	size           uint64
@@ -35,7 +36,7 @@ type V0File struct {
 	gzipReader *gzip.Reader
 }
 
-func NewV0File(root, path, fsMsg, fsHash string, network *network.DatboxNetwork) *V0File {
+func NewV0File(root, path, fsMsg, fsHash string, network *network.DiscordNetwork) *V0File {
 	file := new(V0File)
 	file.Path = filepath.Join(root, path)
 	file.RelPath = path
@@ -175,8 +176,6 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	delete(header.Fields, "size")
 
 	estimatedChunks := int(math.Ceil(float64(size) / FileChunkSize))
-	uploadId := randomId()
-	log.Printf("(%s) Chunks (pre-gzip): %d\n", uploadId, int(estimatedChunks))
 
 	// Piggyback file checksum
 	hasher := md5.New()
@@ -202,7 +201,6 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 			big.NewInt(int64(parsed)).FillBytes(f.octoBuf)
 			f.file.Write(f.octoBuf)
 			f.chunks++
-			fmt.Printf("\r(%s) Uploaded chunks: %d / %d", uploadId, f.chunks, estimatedChunks)
 			return nil
 		}
 
@@ -250,22 +248,24 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		}
 		totalBytes += int64(read)
 		channel <- TransferEvent{
-			Current: totalBytes,
-			Total:   size,
+			CurrentBytes:  totalBytes,
+			TotalBytes:    size,
+			CurrentChunks: f.chunks,
+			TotalChunks:   estimatedChunks,
 		}
 	}
 	gzipWriter.Close()
 	pipeWriter.Close()
 	channel <- TransferEvent{
-		Current: totalBytes,
-		Total:   size,
+		CurrentBytes: totalBytes,
+		TotalBytes:   size,
 	}
 	err = <-readerSignal
 	if err != nil {
 		endTransfer(channel, err)
 		return
 	}
-	fmt.Println()
+	internal.Logger.Println()
 
 	// Write separator
 	big.NewInt(0).FillBytes(f.octoBuf)
@@ -381,8 +381,10 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 			}
 			totalBytes += read
 			channel <- TransferEvent{
-				Current: int64(totalBytes),
-				Total:   f.Size(),
+				CurrentBytes:  int64(totalBytes),
+				TotalBytes:    f.Size(),
+				CurrentChunks: chunks,
+				TotalChunks:   int(estimatedChunks),
 			}
 			_, err = fileWriter.Write(buf[:read])
 			if err != nil {
@@ -391,8 +393,8 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 			}
 		}
 		channel <- TransferEvent{
-			Current: int64(totalBytes),
-			Total:   f.Size(),
+			CurrentBytes: int64(totalBytes),
+			TotalBytes:   f.Size(),
 		}
 		gzipSignal <- nil
 	}()
@@ -424,9 +426,8 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 			return
 		}
 		chunks++
-		fmt.Printf("\r[%s] %d/%d chunks, %d/%d bytes", f.RelPath, chunks, estimatedChunks, totalBytes, f.size)
 	}
-	fmt.Println()
+	internal.Logger.Println()
 	pipeWriter.Close()
 	// Wait for gzip to be done
 	err = <-gzipSignal

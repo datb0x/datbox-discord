@@ -2,31 +2,32 @@ package network
 
 import (
 	"errors"
+	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/datb0x/datbox-discord/internal"
 )
 
-type DatboxNetwork struct {
+type DiscordNetwork struct {
 	channelId string
 	session   *discordgo.Session
 	channel   *discordgo.Channel
 	Uploader  *ConcurrentUploader
 }
 
-func NewNetwork(token string, channelId string, concurrency int) (*DatboxNetwork, error) {
-	network := new(DatboxNetwork)
+func NewNetwork(token string, channelId string, concurrency int) (*DiscordNetwork, error) {
+	network := new(DiscordNetwork)
 	network.channelId = channelId
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return network, err
 	}
 	session.Open()
-	log.Printf("%s is ready\n", session.State.User.Username)
+	internal.Logger.Debugf("%s is ready\n", session.State.User.Username)
 	network.session = session
 	network.channel, err = session.Channel(channelId)
 	if err != nil {
@@ -42,7 +43,7 @@ func NewNetwork(token string, channelId string, concurrency int) (*DatboxNetwork
 	return network, nil
 }
 
-func (network *DatboxNetwork) SendMessage(header *DatboxHeader) error {
+func (network *DiscordNetwork) SendMessage(header *DatboxHeader) error {
 	_, err := network.session.ChannelMessageSend(network.channelId, header.String())
 	if err != nil {
 		return err
@@ -50,17 +51,17 @@ func (network *DatboxNetwork) SendMessage(header *DatboxHeader) error {
 	return nil
 }
 
-func (network *DatboxNetwork) SendAttachment(data []byte, content string) (string, error) {
+func (network *DiscordNetwork) SendAttachment(data []byte, content string) (string, error) {
 	return network.Uploader.SendAttachment(data, content, true)
 }
 
-func (network *DatboxNetwork) FetchAttachment(id string) ([]byte, error) {
+func (network *DiscordNetwork) FetchAttachment(id string) ([]byte, error) {
 	message, err := network.session.ChannelMessage(network.channelId, id)
 	if err != nil {
 		return nil, err
 	}
 	if len(message.Attachments) < 1 {
-		return nil, errors.New("Message has no attachment")
+		return nil, fmt.Errorf("Message has no attachment: %s", id)
 	}
 	resp, err := http.Get(message.Attachments[0].URL)
 	if err != nil {
@@ -69,7 +70,7 @@ func (network *DatboxNetwork) FetchAttachment(id string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func (network *DatboxNetwork) DeleteMessages(ids []string) {
+func (network *DiscordNetwork) DeleteMessages(ids []string) {
 	bulk := []string{}
 	individual := []string{}
 	for _, id := range ids {
@@ -81,23 +82,23 @@ func (network *DatboxNetwork) DeleteMessages(ids []string) {
 		}
 	}
 	if len(bulk) > 0 {
-		log.Printf("Bulk deleting the following messages: %s\n", strings.Join(bulk, ", "))
+		internal.Logger.Debugf("Bulk deleting the following messages: %s\n", strings.Join(bulk, ", "))
 		err := network.session.ChannelMessagesBulkDelete(network.channelId, bulk)
 		if err != nil {
-			log.Println("Remote bulk delete failed", err)
+			internal.Logger.Errorf("Remote bulk delete failed", err)
 		}
 	}
-	log.Printf("Deleting the following messages individually: %s\n", strings.Join(individual, ", "))
+	internal.Logger.Debugf("Deleting the following messages individually: %s\n", strings.Join(individual, ", "))
 	for _, id := range individual {
 		err := network.session.ChannelMessageDelete(network.channelId, id)
 		if err != nil {
-			log.Println("Remote delete failed", err)
+			internal.Logger.Errorf("Remote delete failed", err)
 		}
 	}
 }
 
-func (network *DatboxNetwork) FetchLastMessage() (*discordgo.Message, error) {
-	log.Printf("Fetching last message from channel %s", network.channelId)
+func (network *DiscordNetwork) FetchLastMessage() (*discordgo.Message, error) {
+	internal.Logger.Debugf("Fetching last message from channel %s", network.channelId)
 	messages, err := network.session.ChannelMessages(network.channelId, 1, "", "", "")
 	if err != nil {
 		return nil, err
@@ -108,7 +109,7 @@ func (network *DatboxNetwork) FetchLastMessage() (*discordgo.Message, error) {
 	return messages[0], nil
 }
 
-func (network *DatboxNetwork) FetchMessagesSince(afterID string, limit int) ([]*discordgo.Message, error) {
+func (network *DiscordNetwork) FetchMessagesSince(afterID string, limit int) ([]*discordgo.Message, error) {
 	messages, err := network.session.ChannelMessages(network.channelId, limit, "", afterID, "")
 	if err != nil {
 		return nil, err
@@ -116,7 +117,7 @@ func (network *DatboxNetwork) FetchMessagesSince(afterID string, limit int) ([]*
 	return messages, nil
 }
 
-func (network *DatboxNetwork) FetchMessage(ID string) (*discordgo.Message, error) {
+func (network *DiscordNetwork) FetchMessage(ID string) (*discordgo.Message, error) {
 	message, err := network.session.ChannelMessage(network.channelId, ID)
 	if err != nil {
 		return nil, err

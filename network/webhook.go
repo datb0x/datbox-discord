@@ -7,11 +7,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/datb0x/datbox-discord/internal"
 	"github.com/typical-developers/discord-webhooks-go/webhooks"
 	"golang.org/x/sync/semaphore"
 )
@@ -23,13 +23,13 @@ type ClientWrapper struct {
 
 type ConcurrentUploader struct {
 	Concurrency int
-	network     *DatboxNetwork
+	network     *DiscordNetwork
 	webhooks    []*ClientWrapper
 	semaphore   *semaphore.Weighted
 }
 
-func NewConcurrentUploader(network *DatboxNetwork, concurrency int) (*ConcurrentUploader, error) {
-	log.Printf("Creating concurrent uploader with concurrency %d...", concurrency)
+func NewConcurrentUploader(network *DiscordNetwork, concurrency int) (*ConcurrentUploader, error) {
+	internal.Logger.Debugf("Creating concurrent uploader with concurrency %d...", concurrency)
 	if concurrency <= 1 {
 		return &ConcurrentUploader{
 			Concurrency: concurrency,
@@ -60,10 +60,10 @@ func NewConcurrentUploader(network *DatboxNetwork, concurrency int) (*Concurrent
 			break
 		}
 	}
-	log.Printf("Collected %d webhooks for uploader", len(uploader.webhooks))
+	internal.Logger.Debugf("Collected %d webhooks for uploader", len(uploader.webhooks))
 
 	if len(uploader.webhooks) < concurrency {
-		log.Printf("Channel doesn't have enough webhooks. Creating %d new webhooks...", concurrency-len(uploader.webhooks))
+		internal.Logger.Debugf("Channel doesn't have enough webhooks. Creating %d new webhooks...", concurrency-len(uploader.webhooks))
 		for len(uploader.webhooks) < concurrency {
 			webhook, err := network.session.WebhookCreate(network.channelId, fmt.Sprintf("concurrent-uploader #%d", len(uploader.webhooks)), "")
 			if err != nil {

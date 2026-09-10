@@ -1,4 +1,4 @@
-package structs
+package internal
 
 type Queue[T any] struct {
 	array    []*T
