@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
@@ -179,6 +180,8 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, progressCallback func(
 	// Piggyback file checksum
 	hasher := md5.New()
 
+	startTime := time.Now()
+
 	pipeReader, pipeWriter := io.Pipe()
 	readerSignal := make(chan error)
 	go func() {
@@ -244,6 +247,7 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, progressCallback func(
 		}
 		totalBytes += int64(read)
 		progressCallback(datboxcore.Progress{
+			StartTime:     startTime,
 			CurrentBytes:  totalBytes,
 			TotalBytes:    size,
 			CurrentChunks: f.chunks,
@@ -253,6 +257,7 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, progressCallback func(
 	gzipWriter.Close()
 	pipeWriter.Close()
 	progressCallback(datboxcore.Progress{
+		StartTime:     startTime,
 		CurrentBytes:  totalBytes,
 		TotalBytes:    size,
 		CurrentChunks: f.chunks,
@@ -350,6 +355,7 @@ func (f *V0File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 	hasher := md5.New()
 	estimatedChunks := (stat.Size() - 32) / 8
 	chunks := 0
+	startTime := time.Now()
 
 	pipeReader, pipeWriter := io.Pipe()
 
@@ -375,6 +381,7 @@ func (f *V0File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 			}
 			totalBytes += read
 			progressCallback(datboxcore.Progress{
+				StartTime:     startTime,
 				CurrentBytes:  int64(totalBytes),
 				TotalBytes:    f.Size(),
 				CurrentChunks: chunks,
@@ -387,6 +394,7 @@ func (f *V0File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 			}
 		}
 		progressCallback(datboxcore.Progress{
+			StartTime:     startTime,
 			CurrentBytes:  int64(totalBytes),
 			TotalBytes:    f.Size(),
 			CurrentChunks: chunks,

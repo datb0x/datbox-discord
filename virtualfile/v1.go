@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
@@ -137,6 +138,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, progressCallback func(
 	}
 
 	f.size = uint64(size)
+	startTime := time.Now()
 
 	// Begin header
 	header := network.NewHeader(network.ActionBegin)
@@ -209,6 +211,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, progressCallback func(
 			read := <-readBytes
 			totalBytes += int64(read)
 			progressCallback(datboxcore.Progress{
+				StartTime:     startTime,
 				CurrentBytes:  totalBytes,
 				TotalBytes:    total,
 				CurrentChunks: f.chunks,
@@ -336,6 +339,7 @@ func (f *V1File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 	}
 	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
 	chunks := 0
+	startTime := time.Now()
 
 	var data []byte
 	totalBytes := 0
@@ -352,6 +356,7 @@ func (f *V1File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 		totalBytes += len(data)
 		chunks++
 		progressCallback(datboxcore.Progress{
+			StartTime:     startTime,
 			CurrentBytes:  int64(totalBytes),
 			TotalBytes:    f.Size(),
 			CurrentChunks: chunks,

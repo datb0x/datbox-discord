@@ -840,10 +840,10 @@ type TransferResult struct {
 	Checksum  []byte
 }
 
-func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string, size int64, fileVersion byte, progressCallback func(datboxcore.Progress)) (result TransferResult, err error) {
+func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string, size int64, fileVersion byte, progressCallback func(datboxcore.Progress)) error {
 	net, err := fs.initNetwork()
 	if err != nil {
-		return TransferResult{}, err
+		return err
 	}
 
 	virtualPath = fs.sanitize(virtualPath)
@@ -856,33 +856,30 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 	virtualDir := path.Join(fs.root, path.Dir(virtualPath))
 	os.MkdirAll(virtualDir, 0755)
 	if _, err = os.Stat(virtualDir); err != nil {
-		err = errors.New("Failed to create directory")
-		return
+		return errors.New("Failed to create directory")
 	}
 	if _, err = os.Stat(path.Join(fs.root, virtualPath)); err == nil {
-		err = errors.New("File already exists in virtual file system")
-		return
+		return errors.New("File already exists in virtual file system")
 	}
 
-	result.StartTime = time.Now()
 	var globalPassword []byte
 	if fs.config.Password != "" && fs.config.Password != "skip" {
 		globalPassword, err = hex.DecodeString(fs.config.Password)
 		if err != nil {
-			return
+			return err
 		}
 	}
 	file, err := virtualfile.CreateVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, globalPassword, net, fileVersion)
 	if err != nil {
-		return
+		return err
 	}
 	err = file.OpenOrCreate()
 	if err != nil {
-		return
+		return err
 	}
 	if !file.WriteMode() {
 		err = errors.New("File should be in write mode")
-		return
+		return err
 	}
 
 	// Defer syncing
@@ -904,49 +901,32 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 		fs.lastFsHash = hash
 	}()
 
-	err = file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, progressCallback)
-
-	result.EndTime = time.Now()
-	result.Size = uint64(file.Size())
-	result.Chunks = file.Chunks()
-	result.Checksum = file.Checksum()
-
-	return
+	return file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, progressCallback)
 }
 
-func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath string, progressCallback func(datboxcore.Progress)) (result TransferResult, err error) {
+func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath string, progressCallback func(datboxcore.Progress)) error {
 	net, err := fs.initNetwork()
 	if err != nil {
-		return TransferResult{}, err
+		return err
 	}
 
 	virtualPath = fs.sanitize(virtualPath)
 	_, err = fs.Stat(virtualPath, true)
 	if err != nil {
-		err = errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
-		return
+		return errors.New("Virtual path " + path.Join(fs.root, virtualPath) + " doesn't exist")
 	}
 
-	result.StartTime = time.Now()
 	file, err := virtualfile.OpenVirtualFile(fs.root, virtualPath, fs.lastFsMsgID, fs.lastFsHash, net)
 	if err != nil {
-		return
+		return err
 	}
 	defer file.Close()
 	err = file.OpenOrCreate()
 	if err != nil {
-		return
+		return err
 	}
 	if file.WriteMode() {
-		err = errors.New("File should not be in write mode")
-		return
+		return errors.New("File should not be in write mode")
 	}
-	err = file.Download(fileWriter, progressCallback)
-
-	result.EndTime = time.Now()
-	result.Size = uint64(file.Size())
-	result.Chunks = file.Chunks()
-	result.Checksum = file.Checksum()
-
-	return
+	return file.Download(fileWriter, progressCallback)
 }

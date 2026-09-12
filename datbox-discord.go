@@ -11,11 +11,9 @@ import (
 	"path"
 	"strings"
 	"syscall"
-	"time"
 
 	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
-	"github.com/dustin/go-humanize"
 	"golang.org/x/term"
 )
 
@@ -106,23 +104,11 @@ func NewDiscordProvider(configPath string) (datboxcore.Provider, error) {
 }
 
 func (prov *DiscordProvider) Get(path string, writer io.WriteCloser, progressCallback func(datboxcore.Progress)) error {
-	result, err := prov.fs.Download(writer, path, progressCallback)
-	if err != nil {
-		return err
-	}
-	internal.Logger.Infof("Downloaded %s successfully", path)
-	internal.Logger.Infof("Time elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", ""))
-	return nil
+	return prov.fs.Download(writer, path, progressCallback)
 }
 
 func (prov *DiscordProvider) Put(path string, size int64, reader io.ReadCloser, progressCallback func(datboxcore.Progress)) error {
-	result, err := prov.fs.Upload(reader, path, size, 1, progressCallback)
-	if err != nil {
-		return err
-	}
-	internal.Logger.Infof("Uploaded %s successfully", path)
-	internal.Logger.Infof("Time elapsed: %s", humanize.RelTime(result.StartTime, time.Now(), "", ""))
-	return nil
+	return prov.fs.Upload(reader, path, size, 1, progressCallback)
 }
 
 func (prov *DiscordProvider) List(path string) ([]fs.DirEntry, error) {
