@@ -24,6 +24,8 @@ github.com/clipperhouse/uax29/v2 v2.7.0 h1:+gs4oBZ2gPfVrKPthwbMzWZDaAFPGYK72F0NJ
 github.com/clipperhouse/uax29/v2 v2.7.0/go.mod h1:EFJ2TJMRUaplDxHKj1qAEhCtQPW2tJSwu5BF98AuoVM=
 github.com/datb0x/datbox-core v0.1.1 h1:+716YhGBXrp9ixmVh2R821qqpdKg4X3Y/x8LqRyAkNU=
 github.com/datb0x/datbox-core v0.1.1/go.mod h1:c+RZMehgQKR+D1yjjaZvwaZJgugmOTDAZFgXmKKc1q8=
+github.com/datb0x/datbox-core v0.2.0 h1:jZVVyEae/oAwRF412btUgL2Sd3oYAZEJ9ganQ06Es/s=
+github.com/datb0x/datbox-core v0.2.0/go.mod h1:c+RZMehgQKR+D1yjjaZvwaZJgugmOTDAZFgXmKKc1q8=
 github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkpeCY=
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/go-logfmt/logfmt v0.6.1 h1:4hvbpePJKnIzH1B+8OR/JPbTx37NktoI9LE2QZBBkvE=

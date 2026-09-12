@@ -23,11 +23,11 @@ import (
 	"syscall"
 	"time"
 
+	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
 	"github.com/datb0x/datbox-discord/network"
 	"github.com/datb0x/datbox-discord/virtualfile"
 
-	"github.com/dustin/go-humanize"
 	cp "github.com/otiai10/copy"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/term"
@@ -840,7 +840,7 @@ type TransferResult struct {
 	Checksum  []byte
 }
 
-func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string, size int64, fileVersion byte) (result TransferResult, err error) {
+func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string, size int64, fileVersion byte, progressCallback func(datboxcore.Progress)) (result TransferResult, err error) {
 	net, err := fs.initNetwork()
 	if err != nil {
 		return TransferResult{}, err
@@ -904,22 +904,7 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 		fs.lastFsHash = hash
 	}()
 
-	eventSignal := make(chan virtualfile.TransferEvent)
-	go file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, eventSignal)
-	for {
-		event := <-eventSignal
-		if event.Done {
-			if event.Err != nil {
-				fs.Remove(virtualPath)
-				err = event.Err
-				return
-			}
-			internal.Logger.Printf("\rProgress: 100%% (%s / %s, %s/s, %d / %d chunks)\n", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(time.Since(result.StartTime).Seconds()))), event.CurrentChunks, event.TotalChunks)
-			break
-		} else {
-			internal.Logger.Printf("\rProgress: %03d%% (%s / %s, %s/s, %d / %d chunks)\r", int(100*event.CurrentBytes/event.TotalBytes), humanize.Bytes(uint64(event.CurrentBytes)), humanize.Bytes(uint64(event.TotalBytes)), humanize.Bytes(uint64(event.CurrentBytes/int64(time.Since(result.StartTime).Seconds()))), event.CurrentChunks, event.TotalChunks)
-		}
-	}
+	err = file.Upload(bufio.NewReaderSize(fileReader, virtualfile.FileChunkSize), size, progressCallback)
 
 	result.EndTime = time.Now()
 	result.Size = uint64(file.Size())
@@ -929,7 +914,7 @@ func (fs *discordFileSystem) Upload(fileReader io.ReadCloser, virtualPath string
 	return
 }
 
-func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath string) (result TransferResult, err error) {
+func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath string, progressCallback func(datboxcore.Progress)) (result TransferResult, err error) {
 	net, err := fs.initNetwork()
 	if err != nil {
 		return TransferResult{}, err
@@ -956,22 +941,12 @@ func (fs *discordFileSystem) Download(fileWriter io.WriteCloser, virtualPath str
 		err = errors.New("File should not be in write mode")
 		return
 	}
-	eventSignal := make(chan virtualfile.TransferEvent)
-	go file.Download(fileWriter, eventSignal)
-	for {
-		event := <-eventSignal
-		elapsed := max(time.Since(result.StartTime).Seconds(), 1)
-		if event.Done {
-			if event.Err != nil {
-				err = event.Err
-				return
-			}
-			internal.Logger.Printf("Progress: 100%% (%s / %s, %s/s, %d / %d chunks)\n", humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size())), humanize.Bytes(uint64(file.Size()/int64(elapsed))), event.CurrentChunks, event.TotalChunks)
-			break
-		} else {
-			internal.Logger.Printf("Progress: %03d%% (%s / %s, %s/s, %d / %d chunks)\r", int(100*event.CurrentBytes/event.TotalBytes), humanize.Bytes(uint64(event.CurrentBytes)), humanize.Bytes(uint64(event.TotalBytes)), humanize.Bytes(uint64(event.CurrentBytes/int64(elapsed))), event.CurrentChunks, event.TotalChunks)
-		}
-	}
+	err = file.Download(fileWriter, progressCallback)
+
+	result.EndTime = time.Now()
+	result.Size = uint64(file.Size())
+	result.Chunks = file.Chunks()
+	result.Checksum = file.Checksum()
 
 	return
 }

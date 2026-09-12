@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
 	"github.com/datb0x/datbox-discord/network"
 
@@ -130,10 +131,9 @@ func (f *V1File) WriteHeader() error {
 	return nil
 }
 
-func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferEvent) {
+func (f *V1File) Upload(fileReader io.Reader, size int64, progressCallback func(datboxcore.Progress)) error {
 	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
+		return errors.New("No file opened")
 	}
 
 	f.size = uint64(size)
@@ -152,8 +152,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	if f.GlobalPassword != nil {
 		filePassword, err = SymmetricEncrypt(f.GlobalPassword, f.Password)
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 	} else {
 		filePassword = f.Password
@@ -162,8 +161,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 
 	err = f.network.SendMessage(header)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 
 	// Delete fields for next header
@@ -184,24 +182,23 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	// Piggyback file checksum
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 
 	futures := internal.NewQueue[internal.Future[int64]](f.network.Uploader.Concurrency)
 	readBytes := make(chan int, f.network.Uploader.Concurrency)
 	index := 0
 
-	dequeueFuture := func() {
+	dequeueFuture := func() error {
 		future := futures.Dequeue()
 		id, err := future.Await()
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		f.chunks++
 		big.NewInt(*id).FillBytes(f.octoBuf)
 		f.file.Write(f.octoBuf)
+		return nil
 	}
 
 	// Progress updater
@@ -211,20 +208,19 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		for totalBytes < total {
 			read := <-readBytes
 			totalBytes += int64(read)
-			channel <- TransferEvent{
+			progressCallback(datboxcore.Progress{
 				CurrentBytes:  totalBytes,
 				TotalBytes:    total,
 				CurrentChunks: f.chunks,
 				TotalChunks:   estimatedChunks,
-			}
+			})
 		}
 	}()
 
 	for {
 		read, err := ReadFill(fileReader, buf)
 		if err != nil && err != io.EOF {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		// Update hash
 		hasher.Write(buf[:read])
@@ -242,20 +238,21 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		}()
 		compressed, err := io.ReadAll(pipeReader)
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 
 		// Encrypt data
 		data, err := SymmetricEncrypt(f.Password, compressed)
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 
 		// Send to Discord
 		for futures.IsFull() {
-			dequeueFuture()
+			err = dequeueFuture()
+			if err != nil {
+				return err
+			}
 		}
 		header.Fields["index"] = fmt.Sprint(index)
 		headerStr := header.String()
@@ -294,8 +291,7 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
-	err = f.network.SendMessage(header)
-	endTransfer(channel, err)
+	return f.network.SendMessage(header)
 }
 
 func (f *V1File) Verify(checksum []byte) (bool, error) {
@@ -328,17 +324,15 @@ func (f *V1File) GetNextChunk() ([]byte, error) {
 	return io.ReadAll(flate.NewReader(bytes.NewReader(data)))
 }
 
-func (f *V1File) Download(fileWriter io.WriteCloser, channel chan TransferEvent) {
+func (f *V1File) Download(fileWriter io.WriteCloser, progressCallback func(datboxcore.Progress)) error {
 	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
+		return errors.New("No file opened")
 	}
 	defer fileWriter.Close()
 
 	hasher, err := blake2b.New256([]byte("DtBx"))
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 	estimatedChunks := int(math.Ceil(float64(f.size) / float64(FileChunkSize)))
 	chunks := 0
@@ -351,30 +345,27 @@ func (f *V1File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 			if err == io.EOF {
 				break
 			}
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		hasher.Write(data)
 		fileWriter.Write(data)
 		totalBytes += len(data)
 		chunks++
-		channel <- TransferEvent{
+		progressCallback(datboxcore.Progress{
 			CurrentBytes:  int64(totalBytes),
 			TotalBytes:    f.Size(),
 			CurrentChunks: chunks,
 			TotalChunks:   estimatedChunks,
-		}
+		})
 	}
 	internal.Logger.Println()
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 	if !matched {
-		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
-		return
+		return errors.New("Downloaded file checksum doesn't match")
 	}
-	endTransfer(channel, nil)
+	return nil
 }

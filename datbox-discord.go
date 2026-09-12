@@ -105,8 +105,8 @@ func NewDiscordProvider(configPath string) (datboxcore.Provider, error) {
 	return &provider, nil
 }
 
-func (prov *DiscordProvider) Get(path string, writer io.WriteCloser) error {
-	result, err := prov.fs.Download(writer, path)
+func (prov *DiscordProvider) Get(path string, writer io.WriteCloser, progressCallback func(datboxcore.Progress)) error {
+	result, err := prov.fs.Download(writer, path, progressCallback)
 	if err != nil {
 		return err
 	}
@@ -115,8 +115,8 @@ func (prov *DiscordProvider) Get(path string, writer io.WriteCloser) error {
 	return nil
 }
 
-func (prov *DiscordProvider) Put(path string, size int64, reader io.ReadCloser) error {
-	result, err := prov.fs.Upload(reader, path, size, 1)
+func (prov *DiscordProvider) Put(path string, size int64, reader io.ReadCloser, progressCallback func(datboxcore.Progress)) error {
+	result, err := prov.fs.Upload(reader, path, size, 1, progressCallback)
 	if err != nil {
 		return err
 	}

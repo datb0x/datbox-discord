@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
 	"github.com/datb0x/datbox-discord/network"
 )
@@ -149,10 +150,9 @@ func (f *V0File) WriteMsgID(id uint64) error {
 	return nil
 }
 
-func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferEvent) {
+func (f *V0File) Upload(fileReader io.Reader, size int64, progressCallback func(datboxcore.Progress)) error {
 	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
+		return errors.New("No file opened")
 	}
 
 	buf := make([]byte, 4096)
@@ -167,8 +167,7 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	header.Fields["size"] = fmt.Sprint(f.size)
 	err := f.network.SendMessage(header)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 
 	// Chunk header
@@ -227,8 +226,7 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	for {
 		read, err := fileReader.Read(buf)
 		if err != nil && err != io.EOF {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		if read == 0 {
 			break
@@ -236,34 +234,33 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 		select {
 		case err, ok := <-readerSignal:
 			if err != nil && ok {
-				endTransfer(channel, err)
-				return
+				return err
 			}
 		default:
 		}
 		_, err = gzipWriter.Write(buf[:read])
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		totalBytes += int64(read)
-		channel <- TransferEvent{
+		progressCallback(datboxcore.Progress{
 			CurrentBytes:  totalBytes,
 			TotalBytes:    size,
 			CurrentChunks: f.chunks,
 			TotalChunks:   estimatedChunks,
-		}
+		})
 	}
 	gzipWriter.Close()
 	pipeWriter.Close()
-	channel <- TransferEvent{
-		CurrentBytes: totalBytes,
-		TotalBytes:   size,
-	}
+	progressCallback(datboxcore.Progress{
+		CurrentBytes:  totalBytes,
+		TotalBytes:    size,
+		CurrentChunks: f.chunks,
+		TotalChunks:   estimatedChunks,
+	})
 	err = <-readerSignal
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 	internal.Logger.Println()
 
@@ -280,8 +277,7 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, channel chan TransferE
 	header.Fields["fs-hash"] = f.FileSystemHash
 	header.Fields["path"] = f.RelPath
 	header.Fields["checksum"] = hex.EncodeToString(f.checksum)
-	err = f.network.SendMessage(header)
-	endTransfer(channel, err)
+	return f.network.SendMessage(header)
 }
 
 func (f *V0File) ReadMsgID() (uint64, error) {
@@ -341,16 +337,14 @@ func (f *V0File) GetNextChunkRaw() ([]byte, error) {
 	return f.network.FetchAttachment(strconv.FormatUint(id, 10))
 }
 
-func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent) {
+func (f *V0File) Download(fileWriter io.WriteCloser, progressCallback func(datboxcore.Progress)) error {
 	if f.file == nil {
-		endTransfer(channel, errors.New("No file opened"))
-		return
+		return errors.New("No file opened")
 	}
 	defer fileWriter.Close()
 	stat, err := os.Stat(f.Path)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 
 	hasher := md5.New()
@@ -380,22 +374,24 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 				break
 			}
 			totalBytes += read
-			channel <- TransferEvent{
+			progressCallback(datboxcore.Progress{
 				CurrentBytes:  int64(totalBytes),
 				TotalBytes:    f.Size(),
 				CurrentChunks: chunks,
 				TotalChunks:   int(estimatedChunks),
-			}
+			})
 			_, err = fileWriter.Write(buf[:read])
 			if err != nil {
 				gzipSignal <- err
 				return
 			}
 		}
-		channel <- TransferEvent{
-			CurrentBytes: int64(totalBytes),
-			TotalBytes:   f.Size(),
-		}
+		progressCallback(datboxcore.Progress{
+			CurrentBytes:  int64(totalBytes),
+			TotalBytes:    f.Size(),
+			CurrentChunks: chunks,
+			TotalChunks:   int(estimatedChunks),
+		})
 		gzipSignal <- nil
 	}()
 
@@ -407,23 +403,20 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 			if err == io.EOF {
 				break
 			}
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		hasher.Write(data)
 		// Check if there's error in gzip
 		select {
 		case err, ok = <-gzipSignal:
 			if ok && err != nil {
-				endTransfer(channel, err)
-				return
+				return err
 			}
 		default:
 		}
 		_, err = pipeWriter.Write(data)
 		if err != nil {
-			endTransfer(channel, err)
-			return
+			return err
 		}
 		chunks++
 	}
@@ -432,19 +425,16 @@ func (f *V0File) Download(fileWriter io.WriteCloser, channel chan TransferEvent)
 	// Wait for gzip to be done
 	err = <-gzipSignal
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 
 	newChecksum := hasher.Sum(nil)
 	matched, err := f.Verify(newChecksum)
 	if err != nil {
-		endTransfer(channel, err)
-		return
+		return err
 	}
 	if !matched {
-		endTransfer(channel, errors.New("Downloaded file checksum doesn't match"))
-		return
+		return errors.New("Downloaded file checksum doesn't match")
 	}
-	endTransfer(channel, nil)
+	return nil
 }

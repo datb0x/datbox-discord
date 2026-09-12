@@ -4,7 +4,7 @@ go 1.27.0
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
-	github.com/datb0x/datbox-core v0.1.1
+	github.com/datb0x/datbox-core v0.2.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/otiai10/copy v1.14.1
 	github.com/typical-developers/discord-webhooks-go v1.0.3

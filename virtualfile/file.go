@@ -12,20 +12,12 @@ import (
 	"os"
 	"path/filepath"
 
+	datboxcore "github.com/datb0x/datbox-core"
 	"github.com/datb0x/datbox-discord/internal"
 	"github.com/datb0x/datbox-discord/network"
 )
 
 const FileChunkSize = 10 * 1024 * 1023
-
-type TransferEvent struct {
-	Done          bool
-	Err           error
-	CurrentBytes  int64
-	TotalBytes    int64
-	CurrentChunks int
-	TotalChunks   int
-}
 
 type VirtualFile interface {
 	Version() int
@@ -41,7 +33,7 @@ type VirtualFile interface {
 	Write(data []byte) error
 	WriteHeader() error
 	WriteMsgID(id uint64) error
-	Upload(fileReader io.Reader, size int64, channel chan TransferEvent)
+	Upload(fileReader io.Reader, size int64, progressCallback func(datboxcore.Progress)) error
 
 	ReadMsgID() (uint64, error)
 	ReadPrevMsgID() (uint64, error)
@@ -49,7 +41,7 @@ type VirtualFile interface {
 
 	GetNextChunk() ([]byte, error)
 	GetNextChunkRaw() ([]byte, error)
-	Download(fileWriter io.WriteCloser, channel chan TransferEvent)
+	Download(fileWriter io.WriteCloser, progressCallback func(datboxcore.Progress)) error
 }
 
 func CreateVirtualFile(root, path, fsMsg, fsHash string, globalPassword []byte, network *network.DiscordNetwork, fileVersion byte) (VirtualFile, error) {
@@ -149,13 +141,6 @@ func SymmetricDecrypt(password, data []byte) ([]byte, error) {
 	padding := int(plain[len(plain)-1])
 	plain = plain[:len(plain)-padding]
 	return plain, nil
-}
-
-func endTransfer(channel chan TransferEvent, err error) {
-	channel <- TransferEvent{
-		Done: true,
-		Err:  err,
-	}
 }
 
 func randomId() string {
