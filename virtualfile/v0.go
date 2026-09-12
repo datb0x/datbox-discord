@@ -16,7 +16,6 @@ import (
 	"time"
 
 	datboxcore "github.com/datb0x/datbox-core"
-	"github.com/datb0x/datbox-discord/internal"
 	"github.com/datb0x/datbox-discord/network"
 )
 
@@ -267,7 +266,6 @@ func (f *V0File) Upload(fileReader io.Reader, size int64, progressCallback func(
 	if err != nil {
 		return err
 	}
-	internal.Logger.Println()
 
 	// Write separator
 	big.NewInt(0).FillBytes(f.octoBuf)
@@ -428,7 +426,6 @@ func (f *V0File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 		}
 		chunks++
 	}
-	internal.Logger.Println()
 	pipeWriter.Close()
 	// Wait for gzip to be done
 	err = <-gzipSignal

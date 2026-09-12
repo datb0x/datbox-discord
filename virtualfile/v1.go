@@ -279,8 +279,6 @@ func (f *V1File) Upload(fileReader io.Reader, size int64, progressCallback func(
 		dequeueFuture()
 	}
 
-	internal.Logger.Println()
-
 	// Write separator
 	big.NewInt(0).FillBytes(f.octoBuf)
 	f.file.Write(f.octoBuf)
@@ -363,7 +361,6 @@ func (f *V1File) Download(fileWriter io.WriteCloser, progressCallback func(datbo
 			TotalChunks:   estimatedChunks,
 		})
 	}
-	internal.Logger.Println()
 
 	matched, err := f.Verify(hasher.Sum(nil))
 	if err != nil {
