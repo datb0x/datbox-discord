@@ -24,9 +24,12 @@ func NewNetwork(token string, channelId string, concurrency int) (*DiscordNetwor
 	network.channelId = channelId
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
-		return network, err
+		return nil, err
 	}
-	session.Open()
+	err = session.Open()
+	if err != nil {
+		return nil, err
+	}
 	internal.Logger.Debugf("%s is ready\n", session.State.User.Username)
 	network.session = session
 	network.channel, err = session.Channel(channelId)
